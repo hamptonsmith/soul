@@ -1,0 +1,109 @@
+'use strict';
+
+const bs58 = require('bs58');
+const yup = require('yup');
+
+module.exports = class PageableCollectionOrder {
+    constructor(id, collection, fields) {
+        this.id = id;
+        this.collection = collection;
+        this.fields = [ ...fields, ['_id', 1] ];
+        this.mongoSort = this.fields.reduce(
+                (accum, [fieldName, direction]) => {
+                    accum[fieldName] = direction;
+
+                    return accum;
+                }, {});
+    }
+
+    async find(query = {}, after, limit = 50) {
+        yup.string().nullable().validateSync(after);
+        yup.number().min(1).max(100).validateSync(limit);
+
+        if (after) {
+            query = {
+                $and: [
+                    this.generateAfterQuery(this.decodeAfter(after)),
+                    query
+                ]
+            }
+        }
+
+        const docs = await this.collection.find(query)
+                .sort(this.mongoSort).limit(limit + 1).toArray();
+
+        const result = {
+            docs: docs.slice(0, -1)
+        };
+
+        if (docs.length > limit) {
+            const lastDoc = result.docs[result.docs.length - 1];
+
+            result.after =
+                    bs58.encode(
+                        Buffer.from(
+                            JSON.stringify(
+                                this.fields.map(
+                                        ([fieldName]) => lastDoc[fieldName])),
+                            'utf8'));
+        }
+
+        result.docs.forEach(d => {
+            d.id = d._id;
+            delete d._id;
+        });
+
+        return result;
+    }
+
+    decodeAfter(after) {
+        let result;
+
+        if (after) {
+            result = JSON.parse(bs58.decode(after).toString('utf8'));
+
+            if (!Array.isArray(result)) {
+                throw new Error();
+            }
+
+            if (result.length !== this.fields.length) {
+                throw new Error();
+            }
+        }
+
+        return result;
+    }
+
+    generateAfterQuery(afterFieldValues) {
+        let result;
+        for (let i = afterFieldValues.length - 1; i >= 0; i--) {
+            const [fieldName, sortDirection] = this.fields[i];
+            const cursorValue = afterFieldValues[i];
+
+            const next = compareQuery(fieldName, sortDirection, cursorValue);
+
+            if (result) {
+                result = {
+                    $or: [
+                        {
+                            $and: [
+                                { [fieldName]: { $eq: cursorValue }},
+                                result
+                            ]
+                        },
+                        next
+                    ]
+                };
+            }
+            else {
+                result = next;
+            }
+        }
+
+        return result;
+    }
+}
+
+function compareQuery(name, dir, value) {
+    return { [name]: { [`$${dir > 1 ? 'g' : 'l'}t`]: value } };
+}

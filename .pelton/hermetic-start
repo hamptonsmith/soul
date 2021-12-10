@@ -1,0 +1,19 @@
+#!/bin/bash
+
+echo Starting server run $ISOLATION_KEY for ${1:-some reason}...
+
+# Incantation stolen from https://stackoverflow.com/a/246128
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+CONFIG_FILE="/tmp/razzy-server-config-$ISOLATION_KEY.json"
+
+export MONGO_DB_NAME="db_$ISOLATION_KEY"
+
+cat "$SCRIPT_DIR/fixtures/hermetic-config.json.template" \
+        | envsubst > $CONFIG_FILE
+
+export CONFIG_URI=file://$CONFIG_FILE
+
+npm start -- "file://$CONFIG_FILE"
+
+rm "$CONFIG_FILE"

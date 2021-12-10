@@ -1,0 +1,4 @@
+#!/bin/bash
+
+pelton $PELTON_DOCKER_SUDO env exec mongo \
+        'mongo --quiet --eval "db.getMongo().getDBNames().forEach(function(i){db.getSiblingDB(i).dropDatabase()})"'

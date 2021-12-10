@@ -1,0 +1,4 @@
+DEFAULT_PORT=8080
+PLATFORM=r2tc-ubuntu-20.04
+PROJECT_NAME=r2tc-razzy-server
+PROTOCOL=http
