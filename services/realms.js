@@ -17,10 +17,11 @@ module.exports = class RealmsService {
                 [['createdAt', 1]]);
     }
 
-    async create(friendlyName, owners, userSpecifierSet) {
+    async create(friendlyName, userSpecifierSet) {
         yup.string().min(0).max(100).validateSync(friendlyName);
         yup.array().of(yup.string()).validateSync(userSpecifierSet);
-        yup.array().of(yup.string()).validateSync(owners);
+
+        userSpecifierSet = [...new Set(userSpecifierSet)];
 
         const now = new Date(this.nower());
 
@@ -29,7 +30,6 @@ module.exports = class RealmsService {
         const newDoc = {
             createdAt: now,
             friendlyName,
-            owners,
             updatedAt: now,
             userSpecifierSet
         };
@@ -38,28 +38,5 @@ module.exports = class RealmsService {
                 .insertOne({ _id: id, ... newDoc });
 
         return { id, ...newDoc };
-    }
-
-    async createSession(realmId, agentFingerprint) {
-        const id = generateId('sid');
-        const acceptedAccessNonce = crypto.randomBytes(32);
-        const acceptedRefreshNonce = crypto.randomBytes(32);
-
-        await this.dbClient.collection('Sessions').insert({
-            _id: id,
-            acceptedAccessNonce: bs58.encode(acceptedAccessNonce),
-            acceptedRefreshNonce: bs58.encode(acceptedRefreshNonce),
-            agentFingerprint,
-            creationTime: new Date(),
-            nextGenAccessKey: bs58.encode(crypto.randomBytes(32)),
-            nextGenRefreshKey: bs58.encode(crypto.randomBytes(32)),
-            realmId
-        });
-
-        return {
-            acceptedAccessNonce,
-            acceptedRefreshNonce,
-            id
-        };
     }
 };

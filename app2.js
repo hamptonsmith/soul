@@ -1,7 +1,11 @@
 'use strict';
 
 const bodyParser = require('koa-bodyparser');
+const CSON = require('cson-parser');
+const fsLib = require('fs');
+const http = require('http');
 const Koa = require('koa');
+const Mustache = require('mustache');
 const RealmsService = require('./services/realms');
 const Router = require('@koa/router');
 const SbError = require('@shieldsbetter/sberror2');
@@ -9,22 +13,27 @@ const slurpUri = require('@shieldsbetter/slurp-uri');
 
 const { MongoClient } = require('mongodb');
 
-class MissingEnvironmentVariable extends SbError {
-    static messageTemplate = 'Required environment variable not set: {{name}}';
+class IncorrectUsage extends SbError {
+    static messageTemplate = 'Incorrect usage: {{{message}}}';
 }
 
-module.exports = async ({
-    configUri = process.env.CONFIG_URI,
+class UnexpectedError extends SbError {
+    static messageTemplate = 'Unexpected error: {{{message}}}';
+}
+
+const publicErrors = {};
+
+module.exports = async (argv, {
+    fs = fsLib,
     nower = Date.now
 } = {}) => {
-
-    if (!configUri) {
-        throw new MissingEnvironmentVariable({
-            name: 'CONFIG_URI'
+    if (argv.length > 1) {
+        throw new IncorrectUsage({
+            message: 'Too many parameters: ' + JSON.stringify(argv)
         });
     }
 
-    const config = JSON.parse(await slurpUri(configUri));
+    const config = await loadConfig(argv[0]);
 
     const mongoClient = await MongoClient.connect(config.mongodb.uri);
     const dbClient = mongoClient.db(config.mongodb.dbName);
@@ -39,9 +48,67 @@ module.exports = async ({
     const router = new Router();
 
     app.use(async (ctx, next) => {
+        ctx.request.id = randomRequestId();
         ctx.services = services;
 
-        await next();
+        try {
+            await next();
+
+            if (typeof ctx.body === 'object') {
+                ctx.body = JSON.stringify(ctx.body,
+                    (key, value) => value instanceof Date
+                            ? value.toISOString() : value);
+                ctx.type = 'application/json';
+            }
+        }
+        catch (e) {
+            console.log(
+                    `\n===== Error handling request ${ctx.request.id} =====`);
+            console.log(ctx.request.method, ctx.request.path);
+
+            if (ctx._matchedRoute) {
+                console.log('Matched route ' + ctx._matchedRoute);
+            }
+            else {
+                console.log('Matched no route.');
+            }
+
+            console.log();
+            console.log(e);
+            while (e.cause) {
+                console.log('Caused by: ', e.cause);
+                e = e.cause;
+            }
+
+            console.log();
+
+            if (publicErrors[e.code]) {
+                ctx.body = {
+                    code: e.code,
+                    details: e.details,
+                    message: e.message,
+                    requestId: ctx.request.id
+                };
+
+                ctx.status = publicErrors[e.code];
+            }
+            else {
+                ctx.body = {
+                    code: 'INTERNAL_SERVER_ERROR',
+                    message: 'Internal server error.',
+                    requestId: ctx.request.id
+                };
+
+                ctx.status = 500;
+            }
+        }
+    });
+
+    router.get('/health', async (ctx, next) => {
+        ctx.status = 200;
+        ctx.body = {
+            status: 'ok'
+        };
     });
 
     router.get('/realms', async (ctx, next) => {
@@ -49,12 +116,14 @@ module.exports = async ({
                 {},
                 ctx.query.after,
                 ctx.query.limit !== undefined
-                ? Number.parseInt(ctx.query.limit)
-                : undefined);
+                        ? Number.parseInt(ctx.query.limit)
+                        : undefined);
 
         ctx.status = 200;
         ctx.body = {
-            after,
+            continueToken: after,
+            continueLink: after ? `${config.publicBaseHref}/realms`
+                    + `?after=${after}&limit=${docs.length}` : undefined,
             resources: docs.map(d => ({
                 href: `${config.publicBaseHref}/realms/${d.id}`,
 
@@ -64,10 +133,13 @@ module.exports = async ({
     });
 
     router.post('/realms', bodyParser(), async (ctx, next) => {
-        const { friendlyName, owners, userSpecifierSet } = ctx.request.body;
+        const {
+            friendlyName = '',
+            userSpecifierSet = ['emailAddress']
+        } = ctx.request.body;
 
         const doc = await ctx.services.realms
-                .create(friendlyName, owners, userSpecifierSet);
+                .create(friendlyName, userSpecifierSet);
         doc.href = `${config.publicBaseHref}/realms/${doc.id}`;
 
         ctx.response.set('Location', doc.href);
@@ -81,10 +153,67 @@ module.exports = async ({
         .use(router.routes())
         .use(router.allowedMethods());
 
-    app.listen(8080);
+    const httpServer = http.createServer(app.callback());
+    const port = await new Promise((resolve, reject) => {
+        httpServer.listen(config.port || 0, err => {
+            if (err) {
+                reject(err);
+            }
+            else {
+                resolve(httpServer.address().port);
+            }
+        })
+    });
+
+    config.publicBaseHref = Mustache.render(config.publicBaseHref, { port });
+
+    return {
+        async close() {
+            await httpServer.close();
+            await mongoClient.close();
+        },
+        url: `http://localhost:${port}`
+    };
 };
 
-module.exports().catch(e => {
-    console.log(e);
-    process.exit(1);
-});
+async function loadConfig(uri) {
+    let config;
+    if (uri) {
+        config = CSON.parse(await slurpUri(uri));
+    }
+    else {
+        try {
+            config = CSON.parse(fs.readFileSync('soulconfig.cson', 'utf8'));
+        }
+        catch (e) {
+            if (e.code !== 'ENOENT') {
+                throw new UnexpectedError(e, { message: e.message });
+            }
+
+            throw new IncorrectUsage({
+                message: 'Must run in a directory with a `soulconfig.cson` or '
+                        + 'pass a URI to such a config as the sole argument.'
+            });
+        }
+    }
+
+    return config;
+}
+
+// Doesn't need to be cryptographically secure.
+function randomRequestId() {
+    const alpha = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    let result = '';
+    while (result.length < 8) {
+        result += alpha.charAt(Math.floor(Math.random() * alpha.length));
+    }
+
+    return result;
+}
+
+if (require.main === module) {
+    module.exports(process.argv.slice(2)).catch(e => {
+        console.log(e);
+        process.exit(1);
+    });
+}

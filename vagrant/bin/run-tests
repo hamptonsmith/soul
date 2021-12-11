@@ -1,0 +1,6 @@
+#!/bin/bash
+
+cd /vagrant
+
+pelton -S env ready
+npm test -- "$@"

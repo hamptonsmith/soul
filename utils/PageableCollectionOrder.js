@@ -33,18 +33,20 @@ module.exports = class PageableCollectionOrder {
                 .sort(this.mongoSort).limit(limit + 1).toArray();
 
         const result = {
-            docs: docs.slice(0, -1)
+            docs: docs.slice(0, Math.min(limit, docs.length))
         };
 
         if (docs.length > limit) {
             const lastDoc = result.docs[result.docs.length - 1];
-
             result.after =
                     bs58.encode(
                         Buffer.from(
                             JSON.stringify(
-                                this.fields.map(
-                                        ([fieldName]) => lastDoc[fieldName])),
+                                this.fields
+                                .map(([fieldName]) => lastDoc[fieldName])
+                                .map(el => el instanceof Date
+                                    ? ({ $date: el.toISOString() })
+                                    : el)),
                             'utf8'));
         }
 
@@ -60,7 +62,8 @@ module.exports = class PageableCollectionOrder {
         let result;
 
         if (after) {
-            result = JSON.parse(bs58.decode(after).toString('utf8'));
+            result = JSON.parse(bs58.decode(after).toString('utf8'))
+                    .map(el => el.$date ? new Date(el.$date) : el);
 
             if (!Array.isArray(result)) {
                 throw new Error();
@@ -105,5 +108,5 @@ module.exports = class PageableCollectionOrder {
 }
 
 function compareQuery(name, dir, value) {
-    return { [name]: { [`$${dir > 1 ? 'g' : 'l'}t`]: value } };
+    return { [name]: { [`$${dir > 1 ? 'l' : 'g'}t`]: value } };
 }
