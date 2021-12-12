@@ -3,8 +3,8 @@
 const crypto = require('crypto');
 const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
+const Joi = require('joi');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
-const yup = require('yup');
 
 module.exports = class RealmsService {
     constructor(dbClient, nower) {
@@ -18,8 +18,14 @@ module.exports = class RealmsService {
     }
 
     async create(friendlyName, userSpecifierSet) {
-        yup.string().min(0).max(100).validateSync(friendlyName);
-        yup.array().of(yup.string()).validateSync(userSpecifierSet);
+        Joi.assert({
+            friendlyName,
+            userSpecifierSet
+        }, Joi.object({
+            friendlyName: Joi.string().required().min(0).max(100),
+            userSpecifierSet:
+                    Joi.array().required().items(Joi.string().min(1).max(100))
+        }).strict());
 
         userSpecifierSet = [...new Set(userSpecifierSet)];
 

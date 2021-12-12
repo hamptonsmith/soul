@@ -115,7 +115,7 @@ module.exports = async (argv, {
         // While intuitively it would make no sense for Koa to try to parse
         // params in some "clever" way, I can't find that documented anywhere.
         // So until then, let's be paranoid.
-        for (const [key, value] of ctx.params) {
+        for (const [key, value] of Object.entries(ctx.params || {})) {
             if (typeof value !== 'string') {
                 throw new Error(`URL param "${key}" wasn't a string? Was: `
                         + util.inspect(value, null, false, false));

@@ -1,10 +1,11 @@
 'use strict';
 
-const xor = require('buffer-xor');
 const crypto = require('crypto');
 const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
+const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const SbError = require('@shieldsbetter/sberror2');
+const xorLib = require('buffer-xor');
 
 class BadSignature extends SbError {
     static messageTemplate =
@@ -97,7 +98,7 @@ module.exports = class SessionsService {
 
         await this.mongoCollection.insert(session.toMongoDoc());
 
-        return return {
+        return {
             accessSecret: session.accessSecret,
             accessSecretSignature:
                     sign(session.accessSecret, session.nextGenAuthenticityKey),
@@ -132,17 +133,18 @@ module.exports = class SessionsService {
         }
 
         const secretNonce = crypto.randomBytes(32);
-        const accessSecret = xor(secretNonce, session.nextGenAccessTokenPad);
-        const refreshSecret = xor(secretNonce, session.nextGenRefreshTokenPad);
+        const newAccessSecret = xor(secretNonce, session.nextGenAccessTokenPad);
+        const newRefreshSecret =
+                xor(secretNonce, session.nextGenRefreshTokenPad);
 
         // Next-generation credentials.
         return {
-            accessSecret,
+            accessSecret: newAccessSecret,
             accessSecretSignature:
-                    sign(accessSecret, session.nextGenAuthenticityKey),
-            refreshSecret,
+                    sign(newAccessSecret, session.nextGenAuthenticityKey),
+            refreshSecret: newRefreshSecret,
             refreshSecretSignature:
-                    sign(refreshSecret, session.nextGenAuthenticityKey)
+                    sign(newRefreshSecret, session.nextGenAuthenticityKey)
         };
     }
 
@@ -282,5 +284,5 @@ function xor(b1, b2) {
         throw new Error('Buffers not of the same length.');
     }
 
-    return xor(b1, b2);
+    return xorLib(b1, b2);
 }

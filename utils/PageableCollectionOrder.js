@@ -1,7 +1,7 @@
 'use strict';
 
 const bs58 = require('bs58');
-const yup = require('yup');
+const Joi = require('joi');
 
 module.exports = class PageableCollectionOrder {
     constructor(id, collection, fields, filters = {}) {
@@ -18,10 +18,15 @@ module.exports = class PageableCollectionOrder {
     }
 
     async find(filters = {}, after, limit = 50) {
-        yup.string().nullable().validateSync(after);
-        yup.number().min(1).max(100).validateSync(limit);
+        Joi.assert({
+            after,
+            limit
+        }, Joi.object({
+            after: Joi.string().optional(),
+            limit: Joi.number().required().min(1).max(100)
+        }).strict());
 
-        const query = {};
+        let query = {};
         for (const [key, value] of Object.entries(filters)) {
             if (!this.filters[key]) {
                 throw new Error('No such filter: ' + key);

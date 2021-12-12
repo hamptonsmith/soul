@@ -1,7 +1,8 @@
 'use strict';
 
+const bodyParser = require('koa-bodyparser');
 const SbError = require('@shieldsbetter/sberror2')
-const yup = require('yup');
+const Joi = require('joi');
 
 class UnknownMechanism extends SbError {
     static messageTemplate = 'Unknown POST /session mechanism: {{{got}}}. '
@@ -36,16 +37,18 @@ module.exports = router => {
     router.post('/realms/:realmId/sessions', bodyParser(), async (ctx, next) => {
         switch (ctx.request.body.mechanism) {
             case 'dev': {
-                yup.object(
+                Joi.assert({
+                    body: ctx.request.body
+                }, Joi.object({
                     body: {
                         agentFingerprint:
-                                yup.string().required().min(1).max(500),
-                        existingUserOk: yup.boolean(),
-                        newUserOk: yup.boolean(),
-                        userId: yup.string().required().matches(
+                                Joi.string().required().min(1).max(500),
+                        existingUserOk: Joi.boolean(),
+                        newUserOk: Joi.boolean(),
+                        userId: Joi.string().required().pattern(
                                 /^usr_[a-zA-Z0-9]{1,100}$/),
                     }
-                ).validateSync({ body: ctx.request.body });
+                }).strict());
 
                 ctx.status = 201;
                 ctx.body = await ctx.services.sessions.create(
