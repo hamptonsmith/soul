@@ -6,10 +6,14 @@ const fsLib = require('fs');
 const http = require('http');
 const Koa = require('koa');
 const Mustache = require('mustache');
+const realmsRoutes = require('./http/realms');
 const RealmsService = require('./services/realms');
 const Router = require('@koa/router');
 const SbError = require('@shieldsbetter/sberror2');
+const sessionsRoutes = require('./http/sessions');
+const SessionsService = require('./services/sessions');
 const slurpUri = require('@shieldsbetter/slurp-uri');
+const util = require('util');
 
 const { MongoClient } = require('mongodb');
 
@@ -38,10 +42,12 @@ module.exports = async (argv, {
     const mongoClient = await MongoClient.connect(config.mongodb.uri);
     const dbClient = mongoClient.db(config.mongodb.dbName);
     const realms = new RealmsService(dbClient, nower);
+    const sessions = new SessionsService(dbClient, nower);
 
     const services = {
         dbClient,
-        realms
+        realms,
+        sessions
     };
 
     const app = new Koa();
@@ -50,6 +56,7 @@ module.exports = async (argv, {
     app.use(async (ctx, next) => {
         ctx.request.id = randomRequestId();
         ctx.services = services;
+        ctx.state.config = config;
 
         try {
             await next();
@@ -104,6 +111,20 @@ module.exports = async (argv, {
         }
     });
 
+    app.use(async (ctx, next) => {
+        // While intuitively it would make no sense for Koa to try to parse
+        // params in some "clever" way, I can't find that documented anywhere.
+        // So until then, let's be paranoid.
+        for (const [key, value] of ctx.params) {
+            if (typeof value !== 'string') {
+                throw new Error(`URL param "${key}" wasn't a string? Was: `
+                        + util.inspect(value, null, false, false));
+            }
+        }
+
+        await next();
+    });
+
     router.get('/health', async (ctx, next) => {
         ctx.status = 200;
         ctx.body = {
@@ -111,43 +132,8 @@ module.exports = async (argv, {
         };
     });
 
-    router.get('/realms', async (ctx, next) => {
-        const { after, docs } = await ctx.services.realms.byCreationTime.find(
-                {},
-                ctx.query.after,
-                ctx.query.limit !== undefined
-                        ? Number.parseInt(ctx.query.limit)
-                        : undefined);
-
-        ctx.status = 200;
-        ctx.body = {
-            continueToken: after,
-            continueLink: after ? `${config.publicBaseHref}/realms`
-                    + `?after=${after}&limit=${docs.length}` : undefined,
-            resources: docs.map(d => ({
-                href: `${config.publicBaseHref}/realms/${d.id}`,
-
-                ...d
-            }))
-        };
-    });
-
-    router.post('/realms', bodyParser(), async (ctx, next) => {
-        const {
-            friendlyName = '',
-            userSpecifierSet = ['emailAddress']
-        } = ctx.request.body;
-
-        const doc = await ctx.services.realms
-                .create(friendlyName, userSpecifierSet);
-        doc.href = `${config.publicBaseHref}/realms/${doc.id}`;
-
-        ctx.response.set('Location', doc.href);
-        ctx.response.set('Content-Location', doc.href);
-
-        ctx.status = 201;
-        ctx.body = doc;
-    });
+    realmsRoutes(router);
+    sessionsRoutes(router);
 
     app
         .use(router.routes())

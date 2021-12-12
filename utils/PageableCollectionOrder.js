@@ -4,10 +4,11 @@ const bs58 = require('bs58');
 const yup = require('yup');
 
 module.exports = class PageableCollectionOrder {
-    constructor(id, collection, fields) {
+    constructor(id, collection, fields, filters = {}) {
         this.id = id;
         this.collection = collection;
         this.fields = [ ...fields, ['_id', 1] ];
+        this.filters = filters;
         this.mongoSort = this.fields.reduce(
                 (accum, [fieldName, direction]) => {
                     accum[fieldName] = direction;
@@ -16,9 +17,18 @@ module.exports = class PageableCollectionOrder {
                 }, {});
     }
 
-    async find(query = {}, after, limit = 50) {
+    async find(filters = {}, after, limit = 50) {
         yup.string().nullable().validateSync(after);
         yup.number().min(1).max(100).validateSync(limit);
+
+        const query = {};
+        for (const [key, value] of Object.entries(filters)) {
+            if (!this.filters[key]) {
+                throw new Error('No such filter: ' + key);
+            }
+
+            this.filters[key](query, value);
+        }
 
         if (after) {
             query = {
