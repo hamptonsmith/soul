@@ -135,9 +135,7 @@ module.exports = router => {
                 const {
                     accessSecret,
                     accessSecretSignature,
-                    id: sessionId,
-                    refreshSecret,
-                    refreshSecretSignature
+                    id: sessionId
                 } = await ctx.services.sessions.create(
                     ctx.params.realmId,
                     ctx.request.body.agentFingerprint,
@@ -154,19 +152,7 @@ module.exports = router => {
                     accessSecretSignature
                 ]), ctx.state.config));
 
-                const refreshToken = bs58.encode(gutCheck.sign(Buffer.concat([
-                    Buffer.from([1]),
-                    Buffer.from([sessionIdBuffer.length]),
-                    sessionIdBuffer,
-                    refreshSecret,
-                    refreshSecretSignature
-                ]), ctx.state.config));
-
-                ctx.body = {
-                    id: sessionId,
-                    accessToken,
-                    refreshToken
-                };
+                ctx.body = { id: sessionId, accessToken };
 
                 break;
             }

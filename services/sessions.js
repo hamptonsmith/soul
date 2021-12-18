@@ -7,7 +7,6 @@ const Joi = require('joi');
 const generateId = require('../utils/generate-id');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const SbError = require('@shieldsbetter/sberror2');
-const xorLib = require('buffer-xor');
 
 class BadSignature extends SbError {
     static messageTemplate =
@@ -17,7 +16,6 @@ class BadSignature extends SbError {
 class Session {
     constructor(mongoDoc) {
         this.currentAccessSecret = bs58.decode(mongoDoc.currentAccessSecret);
-        this.currentRefreshSecret = bs58.decode(mongoDoc.currentRefreshSecret);
         this.agentFingerprint = mongoDoc.agentFingerprint;
         this.createdAt = mongoDoc.createdAt;
         this.currentGenerationCreatedAt =
@@ -27,10 +25,6 @@ class Session {
         this.id = mongoDoc._id;
         this.nextGenAuthenticityKey =
                 bs58.decode(mongoDoc.nextGenAuthenticityKey);
-        this.nextGenAccessTokenPad =
-                bs58.decode(mongoDoc.nextGenAccessTokenPad);
-        this.nextGenRefreshTokenPad =
-                bs58.decode(mongoDoc.nextGenRefreshTokenPad);
         this.realmId = mongoDoc.realmId;
         this.userId = mongoDoc.userId;
     }
@@ -43,15 +37,12 @@ class Session {
         return {
             _id: s.id,
             currentAccessSecret: bs58.encode(s.currentAccessSecret),
-            currentRefreshSecret: bs58.encode(s.currentRefreshSecret),
             agentFingerprint: s.agentFingerprint,
             createdAt: s.createdAt,
             currentGenerationCreatedAt: s.currentGenerationCreatedAt,
             currentGenerationNumber: s.currentGenerationNumber,
             lastUsedAt: s.lastUsedAt,
             nextGenAuthenticityKey: bs58.encode(s.nextGenAuthenticityKey),
-            nextGenAccessTokenPad: bs58.encode(s.nextGenAccessTokenPad),
-            nextGenRefreshTokenPad: bs58.encode(s.nextGenRefreshTokenPad),
             realmId: s.realmId,
             userId: s.userId
         };
@@ -96,15 +87,12 @@ module.exports = class SessionsService {
         const session = new Session({
             _id: id,
             currentAccessSecret: bs58.encode(crypto.randomBytes(32)),
-            currentRefreshSecret: bs58.encode(crypto.randomBytes(32)),
             agentFingerprint,
             createdAt: now,
             currentGenerationCreatedAt: now,
             currentGenerationNumber: 0,
             lastUsedAt: now,
             nextGenAuthenticityKey: bs58.encode(crypto.randomBytes(32)),
-            nextGenAccessTokenPad: bs58.encode(crypto.randomBytes(32)),
-            nextGenRefreshTokenPad: bs58.encode(crypto.randomBytes(32)),
             realmId,
             userId
         });
@@ -120,42 +108,27 @@ module.exports = class SessionsService {
         };
     }
 
-    async refresh(realmId, sid, agentFingerprint, refreshSecret, signature) {
+    async refresh(realmId, sid, agentFingerprint, accessSecret, signature) {
         let session = await findWithMatchingFingerprintOrInvalidate(
                 this, realmId, sid, agentFingerprint);
 
-        if (session.currentRefreshSecret !== refreshSecret) {
-            // This isn't our current refresh secret. Is it maybe a next-gen
+        if (session.currentAccessSecret !== accessSecret) {
+            // This isn't our current access secret. Is it maybe a next-gen
             // one?
-            verify(refreshSecret, session.nextGenAuthenticityKey);
+            verify(accessSecret, session.nextGenAuthenticityKey);
 
             // It is! Let's advance generations so we can issue a next,
             // NEXT-generation token.
-            session = await advanceGeneration(
-                    this,
-                    session,
-                    sid,
-                    refreshSecret,
-                    xor(
-                        xor(
-                            refreshSecret,
-                            session.nextGenRefreshTokenPad),
-                        session.nextGenAccessTokenPad));
+            session = await advanceGeneration(this, session, sid, accessSecret);
         }
 
-        const secretNonce = crypto.randomBytes(32);
-        const newAccessSecret = xor(secretNonce, session.nextGenAccessTokenPad);
-        const newRefreshSecret =
-                xor(secretNonce, session.nextGenRefreshTokenPad);
+        const newAccessSecret = crypto.randomBytes(32);
 
         // Next-generation credentials.
         return {
             accessSecret: newAccessSecret,
             accessSecretSignature:
                     sign(newAccessSecret, session.nextGenAuthenticityKey),
-            refreshSecret: newRefreshSecret,
-            refreshSecretSignature:
-                    sign(newRefreshSecret, session.nextGenAuthenticityKey)
         };
     }
 
@@ -173,24 +146,14 @@ module.exports = class SessionsService {
 
             // It is! Let's advance generations.
             session = await advanceGeneration(
-                    this,
-                    session,
-                    sessionId,
-                    xor(
-                        xor(
-                            accessSecret,
-                            session.nextGenAccessTokenPad
-                        ),
-                        session.nextGenRefreshTokenPad),
-                    accessSecret);
+                    this, session, sessionId, accessSecret);
         }
 
         return session;
     }
 };
 
-async function advanceGeneration(
-        sessions, session, refreshSecret, accessSecret) {
+async function advanceGeneration(sessions, session, accessSecret) {
 
     const where = {
         _id: { $eq: session.id },
@@ -207,11 +170,8 @@ async function advanceGeneration(
             currentAccessSecret: bs58.encode(accessSecret),
             currentGenerationCreatedAt: now,
             currentGenerationNumber: currentGenerationNumber + 1,
-            currentRefreshSecret: bs58.encode(refreshSecret),
             lastUsedAt: now,
-            nextGenAuthenticityKey: bs58.encode(crypto.randomBytes(32)),
-            nextGenAccessTokenPad: bs58.encode(crypto.randomBytes(32)),
-            nextGenRefreshTokenPad: bs58.encode(crypto.randomBytes(32))
+            nextGenAuthenticityKey: bs58.encode(crypto.randomBytes(32))
         }
     };
 
@@ -247,41 +207,6 @@ function sign(text, secret) {
     return crypto.createHmac('sha256', secret).update(text, 'utf8').digest();
 }
 
-function toMongoDoc(o) {
-    return result = {
-        _id: o.id,
-        currentAccessSecret: bs58.encode(o.acceptedAccessNonce),
-        currentRefreshSecret: bs58.encode(o.acceptedRefreshNonce),
-        agentFingerprint: o.agentFingerprint,
-        creationTime: o.creationTime,
-        currentGenerationCreationAt: o.currentGenerationCreationAt,
-        currentGenerationNumber: o.currentGenerationNumber,
-        lastUsedAt: o.lastUsedAt,
-        nextGenAuthenticityKey: bs58.encode(o.nextGenAuthenticityKey),
-        nextGenAccessTokenPad: bs58.encode(o.nextGenAccessTokenPad),
-        nextGenRefreshTokenPad: bs58.encode(o.nextGenRefreshTokenPad),
-        realmId: o.realmId,
-        userId: o.userId
-    };
-}
-
-function fromMongoDoc(d) {
-    return {
-        currentAccessSecret: bs58.decode(d.acceptedAccessNonce),
-        currentRefreshSecret: bs58.decode(d.acceptedRefreshNonce),
-        agentFingerprint: d.agentFingerprint,
-        creationTime: d.creationTime,
-        currentGenerationCreationAt: d.currentGenerationCreationAt,
-        currentGenerationNumber: d.currentGenerationNumber,
-        id: d._id,
-        lastUsedAt: d.lastUsedAt,
-        nextGenAuthenticityKey: bs58.decode(d.nextGenAuthenticityKey),
-        nextGenAccessTokenPad: bs58.decode(d.nextGenAccessTokenPad),
-        nextGenRefreshTokenPad: bs58.decode(d.nextGenRefreshTokenPad),
-        realmId: d.realmId
-    };
-}
-
 function verify(text, signature, secret) {
     if (!crypto.createHmac('sha256', secret).update(text).digest()
             .equals(signature)) {
@@ -290,12 +215,4 @@ function verify(text, signature, secret) {
             signature: bs58.encode(signature)
         });
     }
-}
-
-function xor(b1, b2) {
-    if (b1.length !== b2.length) {
-        throw new Error('Buffers not of the same length.');
-    }
-
-    return xorLib(b1, b2);
 }
