@@ -19,7 +19,6 @@ module.exports = (...args) => async t => {
             "uri": `mongodb://localhost:${process.env.MONGOD_PORT}`
         },
         "port": 0,
-        "publicBaseHref": `http://localhost:{{{port}}}`,
 
         ...opts.config
     };
@@ -33,13 +32,30 @@ module.exports = (...args) => async t => {
             { nower }
         );
 
-        config.publicBaseHref = server.url;
-
         await fn(t, {
+            baseHref: server.url,
             config,
             nower,
             soul: axios.create({ baseURL: server.url })
         });
+    }
+    catch (e) {
+        if (e.isAxiosError) {
+            t.log('Axios error. You sent: ' + e.config.method.toUpperCase()
+                    + ' ' + e.config.baseURL + e.config.url);
+            t.log(e.config.headers);
+            t.log(e.config.data);
+
+            t.log('');
+            t.log('You got: ' + e.response.status + ' '
+                    + e.response.statusTest);
+            t.log(e.response.headers);
+            t.log(e.response.data);
+
+            t.fail(e.message);
+        }
+
+        throw e;
     }
     finally {
         if (server) {

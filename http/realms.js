@@ -14,10 +14,10 @@ module.exports = router => {
         ctx.status = 200;
         ctx.body = {
             continueToken: after,
-            continueLink: after ? `${ctx.state.config.publicBaseHref}/realms`
+            continueLink: after ? `${ctx.state.baseHref}/realms`
                     + `?after=${after}&limit=${docs.length}` : undefined,
             resources: docs.map(d => ({
-                href: `${ctx.state.config.publicBaseHref}/realms/${d.id}`,
+                href: `${ctx.state.baseHref}/realms/${d.id}`,
 
                 ...d
             }))
@@ -27,12 +27,12 @@ module.exports = router => {
     router.post('/realms', bodyParser(), async (ctx, next) => {
         const {
             friendlyName = '',
-            userSpecifierSet = ['emailAddress']
+            userSpecifierSet = []
         } = ctx.request.body;
 
         const doc = await ctx.services.realms
                 .create(friendlyName, userSpecifierSet);
-        doc.href = `${ctx.state.config.publicBaseHref}/realms/${doc.id}`;
+        doc.href = `${ctx.state.baseHref}/realms/${doc.id}`;
 
         ctx.response.set('Location', doc.href);
         ctx.response.set('Content-Location', doc.href);

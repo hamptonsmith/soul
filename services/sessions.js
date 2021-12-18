@@ -1,7 +1,9 @@
 'use strict';
 
+const bs58 = require('bs58');
 const crypto = require('crypto');
 const errors = require('../standard-errors');
+const Joi = require('joi');
 const generateId = require('../utils/generate-id');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const SbError = require('@shieldsbetter/sberror2');
@@ -14,12 +16,12 @@ class BadSignature extends SbError {
 
 class Session {
     constructor(mongoDoc) {
-        this.currentAccessSecret = bs58.decode(mongoDoc.acceptedAccessNonce);
-        this.currentRefreshSecret = bs58.decode(mongoDoc.acceptedRefreshNonce);
+        this.currentAccessSecret = bs58.decode(mongoDoc.currentAccessSecret);
+        this.currentRefreshSecret = bs58.decode(mongoDoc.currentRefreshSecret);
         this.agentFingerprint = mongoDoc.agentFingerprint;
-        this.creationTime = mongoDoc.creationTime;
-        this.currentGenerationCreationAt =
-                mongoDoc.currentGenerationCreationAt;
+        this.createdAt = mongoDoc.createdAt;
+        this.currentGenerationCreatedAt =
+                mongoDoc.currentGenerationCreatedAt;
         this.currentGenerationNumber = mongoDoc.currentGenerationNumber;
         this.lastUsedAt = mongoDoc.lastUsedAt;
         this.id = mongoDoc._id;
@@ -40,11 +42,11 @@ class Session {
     static toMongoDoc(s) {
         return {
             _id: s.id,
-            currentAccessSecret: bs58.encode(s.acceptedAccessNonce),
-            currentRefreshSecret: bs58.encode(s.acceptedRefreshNonce),
+            currentAccessSecret: bs58.encode(s.currentAccessSecret),
+            currentRefreshSecret: bs58.encode(s.currentRefreshSecret),
             agentFingerprint: s.agentFingerprint,
-            creationTime: s.creationTime,
-            currentGenerationCreationAt: s.currentGenerationCreationAt,
+            createdAt: s.createdAt,
+            currentGenerationCreatedAt: s.currentGenerationCreatedAt,
             currentGenerationNumber: s.currentGenerationNumber,
             lastUsedAt: s.lastUsedAt,
             nextGenAuthenticityKey: bs58.encode(s.nextGenAuthenticityKey),
@@ -61,7 +63,7 @@ class Session {
 }
 
 module.exports = class SessionsService {
-    constructor(dbClient, nower) {
+    constructor(dbClient, { nower }) {
         this.mongoCollection = dbClient.collection('Sessions');
         this.nower = nower;
 
@@ -76,37 +78,46 @@ module.exports = class SessionsService {
                 });
     }
 
-    async create(realmId, agentFingerprint, /* nullable */ userId) {
+    async create(
+            realmId, /* nullable */ agentFingerprint, /* nullable */ userId) {
+        Joi.assert({
+            agentFingerprint,
+            realmId,
+            userId
+        }, Joi.object({
+            agentFingerprint: Joi.string().optional().min(0).max(1000),
+            realmId: Joi.string().required().min(0).max(100),
+            userId: Joi.string().optional().min(0).max(100)
+        }).strict());
+
         const id = generateId('sid');
         const now = new Date(this.nower());
 
         const session = new Session({
             _id: id,
-            currentAccessSecret: bs.encode(crypto.randomBytes(32)),
-            currentRefreshSecret: bs.encode(crypto.randomBytes(32)),
+            currentAccessSecret: bs58.encode(crypto.randomBytes(32)),
+            currentRefreshSecret: bs58.encode(crypto.randomBytes(32)),
             agentFingerprint,
             createdAt: now,
-            currentGenerationCreationAt: now,
+            currentGenerationCreatedAt: now,
             currentGenerationNumber: 0,
             lastUsedAt: now,
-            nextGenAuthenticityKey: bs.encode(crypto.randomBytes(32)),
-            nextGenAccessTokenPad: bs.encode(crypto.randomBytes(32)),
-            nextGenRefreshTokenPad: bs.encode(crypto.randomBytes(32)),
+            nextGenAuthenticityKey: bs58.encode(crypto.randomBytes(32)),
+            nextGenAccessTokenPad: bs58.encode(crypto.randomBytes(32)),
+            nextGenRefreshTokenPad: bs58.encode(crypto.randomBytes(32)),
             realmId,
             userId
         });
 
-        await this.mongoCollection.insert(session.toMongoDoc());
+        await this.mongoCollection.insertOne(session.toMongoDoc());
 
         return {
-            accessSecret: session.accessSecret,
-            accessSecretSignature:
-                    sign(session.accessSecret, session.nextGenAuthenticityKey),
+            accessSecret: session.currentAccessSecret,
+            accessSecretSignature: crypto.randomBytes(32),
             id: session.id,
-            refreshSecret: session.refreshSecret,
-            refreshSecretSignature:
-                    sign(session.refreshSecret, session.nextGenAuthenticityKey)
-        };;
+            refreshSecret: session.currentRefreshSecret,
+            refreshSecretSignature: crypto.randomBytes(32)
+        };
     }
 
     async refresh(realmId, sid, agentFingerprint, refreshSecret, signature) {
@@ -148,16 +159,17 @@ module.exports = class SessionsService {
         };
     }
 
-    async validateAccessToken(
-            realmId, sessionId, accessSecret, agentFingerprint) {
+    async validateAccessToken(realmId, sessionId, accessSecret, accessSignature,
+            agentFingerprint) {
 
         let session = await findWithMatchingFingerprintOrInvalidate(
-                this, realmId, sid, agentFingerprint);
+                this, realmId, sessionId, agentFingerprint);
 
-        if (session.currentAccessSecret !== accessSecret) {
+        if (!session.currentAccessSecret.equals(accessSecret)) {
             // This isn't our current access secret. Is it maybe a next-gen
             // one?
-            verify(accessSecret, session.nextGenAuthenticityKey);
+            verify(accessSecret, accessSignature,
+                    session.nextGenAuthenticityKey);
 
             // It is! Let's advance generations.
             session = await advanceGeneration(
@@ -216,7 +228,7 @@ async function findWithMatchingFingerprintOrInvalidate(
     const sessionData = await sessions.mongoCollection.findOne({
         _id: sessionId,
         realmId,
-        agentFingerprint
+        agentFingerprint: { $in: [null, agentFingerprint] }
     });
 
     if (!sessionData) {
@@ -231,7 +243,8 @@ async function findWithMatchingFingerprintOrInvalidate(
 }
 
 function sign(text, secret) {
-    return crypto.createHmac('sha256').update(text).digest();
+    console.log('sign', text, secret);
+    return crypto.createHmac('sha256', secret).update(text, 'utf8').digest();
 }
 
 function toMongoDoc(o) {
@@ -270,7 +283,7 @@ function fromMongoDoc(d) {
 }
 
 function verify(text, signature, secret) {
-    if (!crypto.createHmac('sha256').update(text).digest()
+    if (!crypto.createHmac('sha256', secret).update(text).digest()
             .equals(signature)) {
         throw new BadSignature({
             data: bs58.encode(text),

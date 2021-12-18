@@ -7,7 +7,7 @@ const Joi = require('joi');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 
 module.exports = class RealmsService {
-    constructor(dbClient, nower) {
+    constructor(dbClient, { nower }) {
         this.dbClient = dbClient;
         this.nower = nower;
 
@@ -44,5 +44,11 @@ module.exports = class RealmsService {
                 .insertOne({ _id: id, ... newDoc });
 
         return { id, ...newDoc };
+    }
+
+    async fetchById(id) {
+        Joi.assert(id, Joi.string().required());
+
+        return this.dbClient.collection('Realms').findOne({ _id: id });
     }
 };

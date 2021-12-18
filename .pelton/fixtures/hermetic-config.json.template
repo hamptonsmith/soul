@@ -3,6 +3,5 @@
         "dbName": "$DB_NAME",
         "uri": "mongodb://localhost:$MONGOD_PORT"
     },
-    "port": $PORT,
-    "publicBaseHref": "http://localhost:$PORT"
+    "port": $PORT
 }

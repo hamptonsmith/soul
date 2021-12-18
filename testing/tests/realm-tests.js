@@ -13,7 +13,7 @@ test('zero realms by default', hermeticTest(async (t, { soul }) => {
 }));
 
 test('create default realm', hermeticTest(
-        async (t, { config: { publicBaseHref }, soul, nower }) => {
+        async (t, { baseHref, soul, nower }) => {
 
     const postResult = await soul.post('/realms');
 
@@ -23,8 +23,8 @@ test('create default realm', hermeticTest(
         friendlyName: '',
         createdAt: new Date(nower()).toISOString(),
         updatedAt: new Date(nower()).toISOString(),
-        userSpecifierSet: ['emailAddress'],
-        href: `${publicBaseHref}/realms/${postResult.data.id}`
+        userSpecifierSet: [],
+        href: `${baseHref}/realms/${postResult.data.id}`
     });
 
     const getResult = await soul.get('/realms');
@@ -37,15 +37,15 @@ test('create default realm', hermeticTest(
                 friendlyName: '',
                 createdAt: new Date(nower()).toISOString(),
                 updatedAt: new Date(nower()).toISOString(),
-                userSpecifierSet: ['emailAddress'],
-                href: `${publicBaseHref}/realms/${postResult.data.id}`
+                userSpecifierSet: [],
+                href: `${baseHref}/realms/${postResult.data.id}`
             }
         ]
     });
 }));
 
 test('create non-default realm', hermeticTest(
-        async (t, { config: { publicBaseHref }, soul, nower }) => {
+        async (t, { baseHref, soul, nower }) => {
 
     const postResult = await soul.post('/realms', {
         friendlyName: 'Some realm',
@@ -59,7 +59,7 @@ test('create non-default realm', hermeticTest(
         createdAt: new Date(nower()).toISOString(),
         updatedAt: new Date(nower()).toISOString(),
         userSpecifierSet: ['foo', 'bar'],
-        href: `${publicBaseHref}/realms/${postResult.data.id}`
+        href: `${baseHref}/realms/${postResult.data.id}`
     });
 
     const getResult = await soul.get('/realms');
@@ -73,14 +73,14 @@ test('create non-default realm', hermeticTest(
                 createdAt: new Date(nower()).toISOString(),
                 updatedAt: new Date(nower()).toISOString(),
                 userSpecifierSet: ['foo', 'bar'],
-                href: `${publicBaseHref}/realms/${postResult.data.id}`
+                href: `${baseHref}/realms/${postResult.data.id}`
             }
         ]
     });
 }));
 
 test('realm pagination by `continueToken`', hermeticTest(
-        async (t, { config: { publicBaseHref }, soul, nower }) => {
+        async (t, { soul, nower }) => {
 
     const expectedFriendlyNames = [];
     for (let i = 0; i < 50; i++) {

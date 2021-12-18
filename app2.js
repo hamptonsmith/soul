@@ -1,11 +1,18 @@
 'use strict';
 
 const bodyParser = require('koa-bodyparser');
+const bs58 = require('bs58');
+const clone = require('clone');
+const ConsoleErrorReporter = require('./utils/ConsoleErrorReporter');
 const CSON = require('cson-parser');
+const crypto = require('crypto');
+const deepequal = require('deepequal');
 const fsLib = require('fs');
 const http = require('http');
 const Koa = require('koa');
+const lodash = require('lodash');
 const Mustache = require('mustache');
+const optimisticDocument = require('./utils/OptimisticDocument');
 const realmsRoutes = require('./http/realms');
 const RealmsService = require('./services/realms');
 const Router = require('@koa/router');
@@ -13,6 +20,7 @@ const SbError = require('@shieldsbetter/sberror2');
 const sessionsRoutes = require('./http/sessions');
 const SessionsService = require('./services/sessions');
 const slurpUri = require('@shieldsbetter/slurp-uri');
+const UsersService = require('./services/users');
 const util = require('util');
 
 const { MongoClient } = require('mongodb');
@@ -27,46 +35,69 @@ class UnexpectedError extends SbError {
 
 const publicErrors = {};
 
-module.exports = async (argv, {
-    fs = fsLib,
-    nower = Date.now
-} = {}) => {
+module.exports = async (argv, runtimeOpts = {}) => {
+    runtimeOpts = {
+        errorReporter: new ConsoleErrorReporter(runtimeOpts.log || console.log),
+        fs: fsLib,
+        log: console.log,
+        nower: Date.now,
+        schedule: (ms, fn) => setTimeout(fn, ms),
+
+        ...runtimeOpts
+    };
+
     if (argv.length > 1) {
         throw new IncorrectUsage({
             message: 'Too many parameters: ' + JSON.stringify(argv)
         });
     }
 
-    const config = await loadConfig(argv[0]);
+    const serverConfig = await loadConfig(argv[0]);
 
-    const mongoClient = await MongoClient.connect(config.mongodb.uri);
-    const dbClient = mongoClient.db(config.mongodb.dbName);
-    const realms = new RealmsService(dbClient, nower);
-    const sessions = new SessionsService(dbClient, nower);
+    const mongoClient = await MongoClient.connect(serverConfig.mongodb.uri);
+    const dbClient = mongoClient.db(serverConfig.mongodb.dbName);
+
+    const serviceConfigDoc = await readyService(
+            dbClient.collection('ServiceData'), runtimeOpts);
+
+    let config = {
+        ...serverConfig,
+        ...serviceConfigDoc.getData()
+    };
+
+    serviceConfigDoc.on('documentChanged', () => {
+        config = {
+            ...serverConfig,
+            ...serviceConfigDoc.getData()
+        };
+    });
+
+    const realms = new RealmsService(dbClient, runtimeOpts);
+    const sessions = new SessionsService(dbClient, runtimeOpts);
+
+    const users = new UsersService(dbClient, realms, runtimeOpts);
 
     const services = {
         dbClient,
         realms,
-        sessions
+        sessions,
+        users
     };
 
     const app = new Koa();
     const router = new Router();
 
     app.use(async (ctx, next) => {
-        ctx.request.id = randomRequestId();
+        ctx.request.id = randomId();
         ctx.services = services;
+
+        // Note that because we reseat `config` when our underlying service
+        // config changes, each request gets a consistent view of config.
         ctx.state.config = config;
+        ctx.state.baseHref = `${ctx.protocol}://${ctx.host}`;
 
         try {
             await next();
-
-            if (typeof ctx.body === 'object') {
-                ctx.body = JSON.stringify(ctx.body,
-                    (key, value) => value instanceof Date
-                            ? value.toISOString() : value);
-                ctx.type = 'application/json';
-            }
         }
         catch (e) {
             console.log(
@@ -141,7 +172,7 @@ module.exports = async (argv, {
 
     const httpServer = http.createServer(app.callback());
     const port = await new Promise((resolve, reject) => {
-        httpServer.listen(config.port || 0, err => {
+        httpServer.listen(serverConfig.port || 0, err => {
             if (err) {
                 reject(err);
             }
@@ -151,11 +182,10 @@ module.exports = async (argv, {
         })
     });
 
-    config.publicBaseHref = Mustache.render(config.publicBaseHref, { port });
-
     return {
         async close() {
             await httpServer.close();
+            serviceConfigDoc.close();
             await mongoClient.close();
         },
         url: `http://localhost:${port}`
@@ -187,14 +217,33 @@ async function loadConfig(uri) {
 }
 
 // Doesn't need to be cryptographically secure.
-function randomRequestId() {
+function randomId(length = 8) {
     const alpha = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
     let result = '';
-    while (result.length < 8) {
+    while (result.length < length) {
         result += alpha.charAt(Math.floor(Math.random() * alpha.length));
     }
 
     return result;
+}
+
+async function readyService(serviceData, runtimeDeps) {
+    const configDoc =
+            await optimisticDocument(serviceData, 'config', {}, runtimeDeps);
+
+    await configDoc.update(async config => {
+        config.signingKeys = config.signingKeys || {};
+
+        if (Object.keys(config.signingKeys).length === 0) {
+            config.signingKeys['s1'] = {
+                createdAt: new Date(runtimeDeps.nower()),
+                default: true,
+                secret: bs58.encode(crypto.randomBytes(32))
+            };
+        }
+    });
+
+    return configDoc;
 }
 
 if (require.main === module) {
