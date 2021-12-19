@@ -63,23 +63,17 @@ module.exports = {
     // recourse to the database. The contents of the envelope will need to be
     // further validated once session data is loaded.
     decode: (tokenStr, config) => {
-        const tokenBuf = bs58.decode(tokenStr);
-
-        assert.equal(tokenBuf.readUInt8(0), 0);
-
-        const dataLength = tokenBuf.readUInt16BE(1);
-        const data = tokenBuf.slice(3, 3 + dataLength);
-
-        const secretIdLength = tokenBuf.readUInt8(3 + dataLength);
-        const secretId =
-                tokenBuf.slice(4 + dataLength, 4 + dataLength + secretIdLength)
-                .toString('utf8');
+        const {
+            data,
+            remainder: actualSignature,
+            secretId
+        } = deconstructEnvelope(tokenStr, config);
 
         if (!config.signingKeys[secretId]) {
-            throw new Error();
+            throw errors.malformedToken('No such envelope key: ' + secretId,
+                    { prejudice: true });
         }
 
-        const actualSignature = tokenBuf.slice(4 + dataLength + secretIdLength);
         const expectedSignature =
                 crypto.createHmac(
                         'sha256',
@@ -87,24 +81,64 @@ module.exports = {
                     .update(data).digest().slice(0, 4);
 
         if (!actualSignature.equals(expectedSignature)) {
-            throw new Error();
+            throw errors.malformedToken(
+                    'Bad envelope signature.', { prejudice: true });
         }
 
         const protocol = data.readUInt8(0);
-        const sidLength = data.readUInt8(1);
-        const sessionId = data.slice(2, 2 + sidLength).toString('utf8');
-        const eraNumber = data.readUInt32BE(2 + sidLength);
-        const secret = data.slice(6 + sidLength, 6 + sidLength + 32);
-        const signature = data.slice(6 + sidLength + 32);
+        if (protocol !== 0) {
+            throw errors.malformedToken(
+                    'Unexpected inner token protocol:' + protocol,
+                    { prejudice: true }, e);
+        }
 
-        return {
-            eraCredentials: {
-                index: eraNumber,
-                secret,
-                signature
-            },
-            protocol,
-            sessionId
-        };
+        try {
+            const sidLength = data.readUInt8(1);
+            const sessionId = data.slice(2, 2 + sidLength).toString('utf8');
+            const eraNumber = data.readUInt32BE(2 + sidLength);
+            const secret = data.slice(6 + sidLength, 6 + sidLength + 32);
+            const signature = data.slice(6 + sidLength + 32);
+
+            return {
+                eraCredentials: {
+                    index: eraNumber,
+                    secret,
+                    signature
+                },
+                protocol,
+                sessionId
+            };
+        }
+        catch (e) {
+            throw errors.malformedToken(
+                    'Bad inner token.', { prejudice: true }, e);
+        }
     }
 };
+
+function deconstructEnvelope(tokenStr, config) {
+    try {
+        const tokenBuf = bs58.decode(tokenStr);
+
+        if (tokenBuf.readUInt8(0) !== 0) {
+            throw errors.malformedToken(
+                    'Unexpected envelope protocol:' + tokenBuf.readUInt8(0),
+                    { prejudice: true }, e);
+        }
+
+        const dataLength = tokenBuf.readUInt16BE(1);
+        const secretIdLength = tokenBuf.readUInt8(3 + dataLength);
+
+        return {
+            data: tokenBuf.slice(3, 3 + dataLength),
+            remainder: tokenBuf.slice(4 + dataLength + secretIdLength),
+            secretId: tokenBuf.slice(
+                        4 + dataLength, 4 + dataLength + secretIdLength)
+                    .toString('utf8')
+        };
+    }
+    catch (e) {
+        throw errors.malformedToken(
+                'Bad session token.', { prejudice: true }, e);
+    }
+}

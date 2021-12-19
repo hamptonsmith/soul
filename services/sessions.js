@@ -11,11 +11,6 @@ const SbError = require('@shieldsbetter/sberror2');
 
 const { DateTime } = require('luxon');
 
-class BadSignature extends SbError {
-    static messageTemplate =
-            'Signature {{signature}} is invalid for data {{data}}.';
-}
-
 module.exports = class SessionsService {
     constructor(dbClient, { doBestEffort, nower }) {
         this.doBestEffort = doBestEffort;
@@ -106,7 +101,7 @@ module.exports = class SessionsService {
                 .plus(expirationPeriodMs);
 
         if (now > expiresAt) {
-            throw new Error();
+            throw errors.invalidCredentials({ reason: expired });
         }
 
         switch (eraCredentials.index - session.currentEraNumber) {
@@ -125,7 +120,7 @@ module.exports = class SessionsService {
                             .plus(gracePeriodMs);
 
                     if (now > acceptableUntil) {
-                        throw new Error();
+                        throw errors.invalidCredentials({ retry: true });
                     }
                 }
 
@@ -135,7 +130,14 @@ module.exports = class SessionsService {
                 // The user has presented a token from the current era.
 
                 if (!eraCredentials.secret.equals(session.currentEraSecret)) {
-                    throw new Error();
+                    this.doBestEffort(this.mongoCollection.deleteAll({
+                        _id: sessionId
+                    }));
+
+                    throw errors.invalidCredentials({
+                        prejudice: true,
+                        reason: 'bad secret'
+                    });
                 }
 
                 const eraDuration = ms(
@@ -163,9 +165,19 @@ module.exports = class SessionsService {
             }
             case 1: {
                 // The user has presented a token from the next era.
+                if (!crypto
+                        .createHmac('sha256', session.nextEraAuthenticityKey)
+                        .update(eraCredentials.secret).digest()
+                        .equals(eraCredentials.signature)) {
+                    this.doBestEffort(this.mongoCollection.deleteAll({
+                        _id: sessionId
+                    }));
 
-                verify(eraCredentials.secret, eraCredentials.signature,
-                        session.nextEraAuthenticityKey);
+                    throw errors.invalidCredentials({
+                        prejudice: true,
+                        reason: 'bad secret'
+                    });
+                }
 
                 session = await advanceEra(this, session,
                         session.currentEraSecret, eraCredentials.secret);
@@ -227,16 +239,20 @@ async function findWithMatchingFingerprintOrInvalidate(
         sessions, realmId, sessionId, agentFingerprint) {
     const sessionData = await sessions.mongoCollection.findOne({
         _id: sessionId,
-        realmId,
-        agentFingerprint: { $in: [null, agentFingerprint] }
+        realmId
     });
 
     if (!sessionData) {
-        await sessions.mongoCollection.deleteAll({
-            _id: sessionId
-        });
+        throw errors.invalidCredentials({ reason: 'expired' });
+    }
 
-        throw errors.noSuchSession(sessionId);
+    if (sessionData.agentFingerprint
+            && agentFingerprint !== sessionData.agentFingerprint) {
+        sessions.doBestEffort(sessions.mongoCollection.deleteAll({
+            _id: sessionId
+        }));
+
+        throw errors.invalidCredentials({ prejudice: true });
     }
 
     return fromMongoDoc(sessionData);
@@ -274,14 +290,4 @@ function toMongoDoc(o) {
         realmId: o.realmId,
         userId: o.userId
     };
-}
-
-function verify(text, signature, secret) {
-    if (!crypto.createHmac('sha256', secret).update(text).digest()
-            .equals(signature)) {
-        throw new BadSignature({
-            data: bs58.encode(text),
-            signature: bs58.encode(signature)
-        });
-    }
 }

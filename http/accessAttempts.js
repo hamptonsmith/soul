@@ -21,18 +21,23 @@ module.exports = router => {
         }).unknown());
 
         if (ctx.request.body.sessionToken) {
-            const decodedSessionToken = tokens.decode(
-                    ctx.request.body.sessionToken, ctx.state.config);
+            let decodedSessionToken;
+            let session;
 
-            if (decodedSessionToken.protocol !== 0) {
-                throw errors.malformedToken(
-                        'Does not appear to be a session token.');
+            try {
+                decodedSessionToken = tokens.decode(
+                        ctx.request.body.sessionToken, ctx.state.config);
+
+                session = await ctx.services.sessions.validateSessionToken(
+                        ctx.params.realmId, decodedSessionToken.sessionId,
+                        decodedSessionToken.eraCredentials,
+                        ctx.params.agentFingerprint, ctx.state.config);
             }
-
-            const session = await ctx.services.sessions.validateSessionToken(
-                    ctx.params.realmId, decodedSessionToken.sessionId,
-                    decodedSessionToken.eraCredentials,
-                    ctx.params.agentFingerprint, ctx.state.config);
+            catch (e) {
+                if (e.code !== 'MALFORMED_TOKEN') {
+                    throw e.unexpectedError(e);
+                }
+            }
 
             ctx.status = 200;
             ctx.body = {
