@@ -97,6 +97,18 @@ module.exports = class SessionsService {
                 this, realmId, sessionId, agentFingerprint);
 
         const now = DateTime.fromJSDate(new Date(this.nower()));
+
+        const expirationPeriodMs = ms(
+                session.inactivityExpirationDuration
+                || config.defaultSessionInactivityExpirationDuration);
+
+        const expiresAt = DateTime.fromJSDate(session.lastUsedAt)
+                .plus(expirationPeriodMs);
+
+        if (now > expiresAt) {
+            throw new Error();
+        }
+
         switch (eraCredentials.index - session.currentEraNumber) {
             case -1: {
                 // The user has presented a token from the last era.
@@ -165,13 +177,13 @@ module.exports = class SessionsService {
             }
         }
 
-        await this.doBestEffort(
+        await this.doBestEffort('update session lastUsedAt field',
                 this.mongoCollection.updateOne({
                     _id: sessionId,
                     lastUsedAt: { $lt: now }
                 }, {
                     $set: { lastUsedAt: now }
-                });
+                }));
 
         return {
             ...session,

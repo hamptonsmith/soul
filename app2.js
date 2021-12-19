@@ -39,6 +39,12 @@ const publicErrors = {};
 
 module.exports = async (argv, runtimeOpts = {}) => {
     runtimeOpts = {
+        doBestEffort: (name, pr) => {
+            pr.catch(e => {
+                this.errorReporter.warning(
+                    'Error during best effort action: ' + name, e)
+            });
+        },
         errorReporter: new ConsoleErrorReporter(runtimeOpts.log || console.log),
         fs: fsLib,
         log: console.log,
