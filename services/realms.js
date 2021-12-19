@@ -14,7 +14,12 @@ module.exports = class RealmsService {
         this.byCreationTime = new PageableCollectionOrder(
                 'createdAt',
                 this.dbClient.collection('Realms'),
-                [['createdAt', 1]]);
+                [['createdAt', 1]],
+                d => {
+                    d.id = d._id;
+                    delete d._id;
+                    return d;
+                });
     }
 
     async create(friendlyName, userSpecifierSet) {

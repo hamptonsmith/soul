@@ -5,56 +5,20 @@ const crypto = require('crypto');
 const errors = require('../standard-errors');
 const Joi = require('joi');
 const generateId = require('../utils/generate-id');
+const ms = require('ms');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const SbError = require('@shieldsbetter/sberror2');
+
+const { DateTime } = require('luxon');
 
 class BadSignature extends SbError {
     static messageTemplate =
             'Signature {{signature}} is invalid for data {{data}}.';
 }
 
-class Session {
-    constructor(mongoDoc) {
-        this.currentAccessSecret = bs58.decode(mongoDoc.currentAccessSecret);
-        this.agentFingerprint = mongoDoc.agentFingerprint;
-        this.createdAt = mongoDoc.createdAt;
-        this.currentGenerationCreatedAt =
-                mongoDoc.currentGenerationCreatedAt;
-        this.currentGenerationNumber = mongoDoc.currentGenerationNumber;
-        this.lastUsedAt = mongoDoc.lastUsedAt;
-        this.id = mongoDoc._id;
-        this.nextGenAuthenticityKey =
-                bs58.decode(mongoDoc.nextGenAuthenticityKey);
-        this.realmId = mongoDoc.realmId;
-        this.userId = mongoDoc.userId;
-    }
-
-    signForNextGeneration(data) {
-        return sign(data, this.nextGenAuthenticityKey);
-    }
-
-    static toMongoDoc(s) {
-        return {
-            _id: s.id,
-            currentAccessSecret: bs58.encode(s.currentAccessSecret),
-            agentFingerprint: s.agentFingerprint,
-            createdAt: s.createdAt,
-            currentGenerationCreatedAt: s.currentGenerationCreatedAt,
-            currentGenerationNumber: s.currentGenerationNumber,
-            lastUsedAt: s.lastUsedAt,
-            nextGenAuthenticityKey: bs58.encode(s.nextGenAuthenticityKey),
-            realmId: s.realmId,
-            userId: s.userId
-        };
-    }
-
-    toMongoDoc() {
-        return Session.toMongoDoc(this);
-    }
-}
-
 module.exports = class SessionsService {
-    constructor(dbClient, { nower }) {
+    constructor(dbClient, { doBestEffort, nower }) {
+        this.doBestEffort = doBestEffort;
         this.mongoCollection = dbClient.collection('Sessions');
         this.nower = nower;
 
@@ -62,6 +26,7 @@ module.exports = class SessionsService {
                 'createdAt',
                 this.mongoCollection,
                 [['createdAt', 1]],
+                fromMongoDoc,
                 {
                     realmId: (query, value) => {
                         query.realmId = { $eq: value };
@@ -84,100 +49,163 @@ module.exports = class SessionsService {
         const id = generateId('sid');
         const now = new Date(this.nower());
 
-        const session = new Session({
-            _id: id,
-            currentAccessSecret: bs58.encode(crypto.randomBytes(32)),
+        const session = {
+            currentEraSecret: crypto.randomBytes(32),
             agentFingerprint,
             createdAt: now,
-            currentGenerationCreatedAt: now,
-            currentGenerationNumber: 0,
+            currentEraStartedAt: now,
+            currentEraNumber: 0,
+            id: id,
             lastUsedAt: now,
-            nextGenAuthenticityKey: bs58.encode(crypto.randomBytes(32)),
+            nextEraAuthenticityKey: crypto.randomBytes(32),
             realmId,
             userId
-        });
+        };
 
-        await this.mongoCollection.insertOne(session.toMongoDoc());
+        await this.mongoCollection.insertOne(toMongoDoc(session));
 
         return {
-            accessSecret: session.currentAccessSecret,
-            accessSecretSignature: crypto.randomBytes(32),
-            id: session.id,
-            refreshSecret: session.currentRefreshSecret,
-            refreshSecretSignature: crypto.randomBytes(32)
+            eraCredentials: {
+                index: 0,
+                secret: session.currentEraSecret,
+
+                // Here we're returning the current era's secret, whose use in a
+                // session token requires only knowing the secret, hence the
+                // signature is irrelevant. There is no "current generation
+                // authenticity key" and thus even if we -wanted- to sign this
+                // thing, there's nothing sensible to sign it with. We go ahead
+                // and return some random bytes just to keep things mostly
+                // consistent. After all, since we don't know what the current
+                // generation's signing key hypothetically "might have been",
+                // these bytes could well be the signature...
+                signature: crypto.randomBytes(32)
+            },
+
+            ...session
         };
     }
 
     async refresh(realmId, sid, agentFingerprint, accessSecret, signature) {
-        let session = await findWithMatchingFingerprintOrInvalidate(
-                this, realmId, sid, agentFingerprint);
-
-        if (session.currentAccessSecret !== accessSecret) {
-            // This isn't our current access secret. Is it maybe a next-gen
-            // one?
-            verify(accessSecret, session.nextGenAuthenticityKey);
-
-            // It is! Let's advance generations so we can issue a next,
-            // NEXT-generation token.
-            session = await advanceGeneration(this, session, sid, accessSecret);
-        }
-
-        const newAccessSecret = crypto.randomBytes(32);
-
-        // Next-generation credentials.
-        return {
-            accessSecret: newAccessSecret,
-            accessSecretSignature:
-                    sign(newAccessSecret, session.nextGenAuthenticityKey),
-        };
+        throw new Error('not implemented');
     }
 
-    async validateAccessToken(realmId, sessionId, accessSecret, accessSignature,
-            agentFingerprint) {
+    async validateSessionToken(
+            realmId, sessionId, eraCredentials, agentFingerprint, config) {
 
+        let nextEraCredentials;
         let session = await findWithMatchingFingerprintOrInvalidate(
                 this, realmId, sessionId, agentFingerprint);
 
-        if (!session.currentAccessSecret.equals(accessSecret)) {
-            // This isn't our current access secret. Is it maybe a next-gen
-            // one?
-            verify(accessSecret, accessSignature,
-                    session.nextGenAuthenticityKey);
+        const now = DateTime.fromJSDate(new Date(this.nower()));
+        switch (eraCredentials.index - session.currentEraNumber) {
+            case -1: {
+                // The user has presented a token from the last era.
 
-            // It is! Let's advance generations.
-            session = await advanceGeneration(
-                    this, session, sessionId, accessSecret);
+                if (session.previousEraSecret
+                        && eraCredentials.secret.equals(
+                                session.previousEraSecret)) {
+                    const gracePeriodMs = ms(
+                            session.tokenGracePeriodDuration
+                            || config.defaultSessionTokenGracePeriodDuration);
+
+                    const acceptableUntil =
+                            DateTime.fromJSDate(session.currentEraStartedAt)
+                            .plus(gracePeriodMs);
+
+                    if (now > acceptableUntil) {
+                        throw new Error();
+                    }
+                }
+
+                break;
+            }
+            case 0: {
+                // The user has presented a token from the current era.
+
+                if (!eraCredentials.secret.equals(session.currentEraSecret)) {
+                    throw new Error();
+                }
+
+                const eraDuration = ms(
+                        session.tokenEraDuration
+                        || config.defaultSessionTokenEraDuration);
+
+                const sunsetsAt =
+                        DateTime.fromJSDate(session.currentEraStartedAt)
+                        .plus(eraDuration);
+
+                if (now >= sunsetsAt) {
+                    // These credentials are fine, but this era is sunsetting,
+                    // so let's suggest some next-era credentials.
+
+                    const nextEraSecret = crypto.randomBytes(32);
+                    nextEraCredentials = {
+                        index: session.currentEraNumber + 1,
+                        secret: nextEraSecret,
+                        signature: sign(
+                                nextEraSecret, session.nextEraAuthenticityKey)
+                    };
+                }
+
+                break;
+            }
+            case 1: {
+                // The user has presented a token from the next era.
+
+                verify(eraCredentials.secret, eraCredentials.signature,
+                        session.nextEraAuthenticityKey);
+
+                session = await advanceEra(this, session,
+                        session.currentEraSecret, eraCredentials.secret);
+
+                break;
+            }
+            default: {
+                throw new Error();
+            }
         }
 
-        return session;
+        await this.doBestEffort(
+                this.mongoCollection.updateOne({
+                    _id: sessionId,
+                    lastUsedAt: { $lt: now }
+                }, {
+                    $set: { lastUsedAt: now }
+                });
+
+        return {
+            ...session,
+
+            nextEraCredentials
+        };
     }
 };
 
-async function advanceGeneration(sessions, session, accessSecret) {
-
+async function advanceEra(sessions, session, oldSecret, newSecret) {
     const where = {
         _id: { $eq: session.id },
 
         // Make sure somebody else hasn't accepted a refresh key and advanced
-        // generation in the mean time.
-        currentGenerationNumber: { $eq: session.currentGenerationNumber }
+        // era in the mean time.
+        currentEraNumber: { $eq: session.currentEraNumber }
     };
 
     const now = new Date(sessions.nower());
 
     const update = {
         $set: {
-            currentAccessSecret: bs58.encode(accessSecret),
-            currentGenerationCreatedAt: now,
-            currentGenerationNumber: currentGenerationNumber + 1,
+            currentEraSecret: bs58.encode(newSecret),
+            currentEraStartedAt: now,
+            currentEraNumber: currentEraNumber + 1,
             lastUsedAt: now,
-            nextGenAuthenticityKey: bs58.encode(crypto.randomBytes(32))
+            nextEraAuthenticityKey: bs58.encode(crypto.randomBytes(32)),
+            previousEraSecret: bs58.encode(oldSecret)
         }
     };
 
     await sessions.mongoCollection.updateOne(where, update);
 
-    return new Session({
+    return fromMongoDoc({
         ...session.toMongoDoc(),
         ...update.$set
     });
@@ -199,12 +227,41 @@ async function findWithMatchingFingerprintOrInvalidate(
         throw errors.noSuchSession(sessionId);
     }
 
-    return new Session(sessionData);
+    return fromMongoDoc(sessionData);
+}
+
+function fromMongoDoc(d) {
+    return {
+        agentFingerprint: d.agentFingerprint,
+        currentEraSecret: bs58.decode(d.currentEraSecret),
+        createdAt: d.createAt,
+        currentEraStartedAt: d.currentEraStartedAt,
+        currentEraNumber: d.currentEraNumber,
+        lastUsedAt: d.lastUsedAt,
+        id: d._id,
+        nextEraAuthenticityKey: bs58.decode(d.nextEraAuthenticityKey),
+        realmId: d.realmId,
+        userId: d.userId
+    };
 }
 
 function sign(text, secret) {
-    console.log('sign', text, secret);
-    return crypto.createHmac('sha256', secret).update(text, 'utf8').digest();
+    return crypto.createHmac('sha256', secret).update(text).digest();
+}
+
+function toMongoDoc(o) {
+    return {
+        _id: o.id,
+        agentFingerprint: o.agentFingerprint,
+        currentEraSecret: bs58.encode(o.currentEraSecret),
+        createdAt: o.createAt,
+        currentEraStartedAt: o.currentEraStartedAt,
+        currentEraNumber: o.currentEraNumber,
+        lastUsedAt: o.lastUsedAt,
+        nextEraAuthenticityKey: bs58.encode(o.nextEraAuthenticityKey),
+        realmId: o.realmId,
+        userId: o.userId
+    };
 }
 
 function verify(text, signature, secret) {

@@ -10,6 +10,12 @@ module.exports = {
     duplicateUser() {
         return new this.DuplicateUser();
     },
+    MalformedToken: class extends SbError {
+        static messageTemplate = 'Malformed token: {{reason}}';
+    },
+    malformedToken(reason) {
+        return new this.MalformedToken({ reason });
+    },
     NoSuchSession: class extends SbError {
         static messageTemplate = 'No such session: {{sessionId}}';
     },

@@ -17,6 +17,11 @@ module.exports = class UsersService {
                 'createdAt',
                 this.mongoCollection,
                 [['createdAt', 1]],
+                d => {
+                    d.id = d._id;
+                    delete d._id;
+                    return d;
+                },
                 {
                     realmId: (query, value) => {
                         query.realmId = { $eq: value };

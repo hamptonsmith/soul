@@ -35,6 +35,7 @@ module.exports = (...args) => async t => {
         await fn(t, {
             baseHref: server.url,
             config,
+            doBestEffort: async pr => await pr,
             nower,
             soul: axios.create({ baseURL: server.url })
         });

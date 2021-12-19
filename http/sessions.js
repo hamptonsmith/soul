@@ -4,7 +4,7 @@ const assert = require('assert');
 const bodyParser = require('koa-bodyparser');
 const bs58 = require('bs58');
 const errors = require('../standard-errors');
-const gutCheck = require('../utils/gut-check-auth-sig');
+const tokens = require('../utils/tokens');
 const SbError = require('@shieldsbetter/sberror2')
 const Joi = require('joi');
 
@@ -17,38 +17,30 @@ class UnknownMechanism extends SbError {
             + 'Should be "dev".';
 }
 
-class MalformedToken extends SbError {
-    static messageTemplate = 'Malformed token: {{reason}}';
-}
-
 module.exports = router => {
     router.get('/realms/:realmId/sessions', async (ctx, next) => {
         Joi.assert({
             query: ctx.query
         }, Joi.object({
             query: {
-                accessToken: Joi.string().optional(),
+                sessionToken: Joi.string().optional(),
                 agentFingerprint: Joi.string().optional()
             }
         }));
 
         let after, docs;
-        if (ctx.query.accessToken) {
-            const decodedAccessToken = decodeToken(
-                gutCheck.verifyAndOpen(bs58.decode(ctx.query.accessToken),
-                        ctx.state.config));
+        if (ctx.query.sessionToken) {
+            const decodedSessionToken =
+                    tokens.decode(ctx.query.sessionToken, ctx.state.config);
 
-            if (decodedAccessToken.protocol !== 0) {
-                throw new MalformedToken({
-                    reason: 'Does not appear to be an access token.'
-                });
+            if (decodedSessionToken.protocol !== 0) {
+                throw errors.malformedToken('Does not appear to be an session token.');
             }
 
-            const session = await ctx.services.sessions.validateAccessToken(
-                    ctx.params.realmId, decodedAccessToken.sessionId,
-                    decodedAccessToken.secret,
-                    decodedAccessToken.signature,
-                    ctx.params.agentFingerprint)
+            const session = await ctx.services.sessions.validateSessionToken(
+                    ctx.params.realmId, decodedSessionToken.sessionId,
+                    decodedSessionToken.eraCredentials,
+                    ctx.params.agentFingerprint, ctx.state.config);
 
             docs = [session];
         }
@@ -131,28 +123,57 @@ module.exports = router => {
                     userId = user.id;
                 }
 
-                ctx.status = 201;
-                const {
-                    accessSecret,
-                    accessSecretSignature,
-                    id: sessionId
-                } = await ctx.services.sessions.create(
+                const session = await ctx.services.sessions.create(
                     ctx.params.realmId,
                     ctx.request.body.agentFingerprint,
                     ctx.request.body.userId
                 );
 
-                const sessionIdBuffer = Buffer.from(sessionId, 'utf8');
+                const sessionIdBuffer = Buffer.from(session.id, 'utf8');
 
-                const accessToken = bs58.encode(gutCheck.sign(Buffer.concat([
-                    Buffer.from([0]),
-                    Buffer.from([sessionIdBuffer.length]),
-                    sessionIdBuffer,
-                    accessSecret,
-                    accessSecretSignature
-                ]), ctx.state.config));
+                const sessionToken = tokens.encode(
+                        session.id, session.eraCredentials, ctx.state.config);
 
-                ctx.body = { id: sessionId, accessToken };
+                ctx.status = 201;
+                ctx.body = {
+                    createdAt: session.createdAt,
+                    currentEraStartedAt: session.currentEraStartedAt,
+                    currentEraNumber: session.currentEraNumber,
+                    href: `${ctx.state.baseHref}`
+                            + `/realms/${ctx.params.realmId}`
+                            + `/sessions/${session.id}`,
+                    id: session.id,
+                    lastUsedAt: session.lastUsedAt,
+                    realmId: session.realmId,
+                    sessionToken,
+                    userId: session.userId
+                };
+
+                break;
+            }
+            case 'token': {
+                Joi.assert({
+                    body: ctx.request.body
+                }, Joi.object({
+                    body: {
+                        sessionToken: Joi.string().min(1).max(500).required()
+                    }
+                }).unknown());
+
+                const decodedSessionToken =
+                        tokens.decode(ctx.body.sessionToken, ctx.state.config);
+
+                if (decodedSessionToken.protocol !== 0) {
+                    throw errors.malformedToken(
+                            'Does not appear to be a session token.');
+                }
+
+                const session =
+                        await ctx.services.sessions.validateSessionToken(
+                                ctx.params.realmId,
+                                decodedAccessToken.sessionId,
+                                decodedSessionToken.eraCredentials,
+                                ctx.params.agentFingerprint, ctx.state.config)
 
                 break;
             }
@@ -164,22 +185,3 @@ module.exports = router => {
         }
     });
 };
-
-function decodeToken(t) {
-    if (typeof t === 'string') {
-        t = bs58.decode(t);
-    }
-
-    const protocol = t.readUInt8(0);
-    const sidLength = t.readUInt8(1);
-    const sessionId = t.slice(2, 2 + sidLength).toString('utf8');
-    const secret = t.slice(2 + sidLength, 2 + sidLength + 32);
-    const signature = t.slice(2 + sidLength + 32);
-
-    return {
-        protocol,
-        secret,
-        sessionId,
-        signature
-    };
-}

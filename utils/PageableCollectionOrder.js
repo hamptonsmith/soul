@@ -4,11 +4,12 @@ const bs58 = require('bs58');
 const Joi = require('joi');
 
 module.exports = class PageableCollectionOrder {
-    constructor(id, collection, fields, filters = {}) {
+    constructor(id, collection, fields, map, filters = {}) {
         this.id = id;
         this.collection = collection;
         this.fields = [ ...fields, ['_id', 1] ];
         this.filters = filters;
+        this.map = map;
         this.mongoSort = this.fields.reduce(
                 (accum, [fieldName, direction]) => {
                     accum[fieldName] = direction;
@@ -65,10 +66,7 @@ module.exports = class PageableCollectionOrder {
                             'utf8'));
         }
 
-        result.docs.forEach(d => {
-            d.id = d._id;
-            delete d._id;
-        });
+        result.docs = result.docs.map(this.map);
 
         return result;
     }

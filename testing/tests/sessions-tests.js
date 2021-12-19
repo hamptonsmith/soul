@@ -15,9 +15,9 @@ test('create dev session w/ new user', hermeticTest(
         userId: 'usr_testuser'
     });
 
-    const { data: sessionQuery } = await soul.get(`/realms/${realmId}`
-            + `/sessions?accessToken=${sessionData.accessToken}`);
+    const { data: accessAttemptData } = await soul.post(`/realms/${realmId}`
+            + `/accessAttempts`, { sessionToken: sessionData.sessionToken });
 
-    t.is(sessionQuery.resources.length, 1);
-    t.is(sessionQuery.resources[0].userId, 'usr_testuser');
+    t.is(accessAttemptData.resolution, 'valid');
+    t.is(accessAttemptData.session.userId, 'usr_testuser');
 }));

@@ -1,5 +1,6 @@
 'use strict';
 
+const accessAttemptsRoutes = require('./http/accessAttempts');
 const bodyParser = require('koa-bodyparser');
 const bs58 = require('bs58');
 const clone = require('clone');
@@ -7,6 +8,7 @@ const ConsoleErrorReporter = require('./utils/ConsoleErrorReporter');
 const CSON = require('cson-parser');
 const crypto = require('crypto');
 const deepequal = require('deepequal');
+const defaultServiceConfig = require('./default-service-config');
 const fsLib = require('fs');
 const http = require('http');
 const Koa = require('koa');
@@ -62,12 +64,14 @@ module.exports = async (argv, runtimeOpts = {}) => {
 
     let config = {
         ...serverConfig,
+        ...defaultServiceConfig,
         ...serviceConfigDoc.getData()
     };
 
     serviceConfigDoc.on('documentChanged', () => {
         config = {
             ...serverConfig,
+            ...defaultServiceConfig,
             ...serviceConfigDoc.getData()
         };
     });
@@ -163,6 +167,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
         };
     });
 
+    accessAttemptsRoutes(router);
     realmsRoutes(router);
     sessionsRoutes(router);
 
