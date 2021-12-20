@@ -14,13 +14,27 @@ module.exports = {
         static messageTemplate = 'Invalid credentials.';
     },
     invalidCredentials(details, cause) {
-        return new this.InvalidCredentials(details, cause);
+        // TODO: get rid of this grossness once I once again have control of my
+        //       npm account and can publish the fix...
+        if (cause) {
+            return new this.InvalidCredentials(details, cause);
+        }
+        else {
+            return new this.InvalidCredentials(details);
+        }
     },
     MalformedToken: class extends SbError {
         static messageTemplate = 'Malformed token: {{reason}}';
     },
     malformedToken(reason, details, cause) {
-        return new this.MalformedToken({ reason, ...details }, cause);
+        // TODO: get rid of this grossness once I once again have control of my
+        //       npm account and can publish the fix...
+        if (cause) {
+            return new this.MalformedToken({ reason, ...details }, cause);
+        }
+        else {
+            return new this.MalformedToken({ reason, ...details });
+        }
     },
     NoSuchSession: class extends SbError {
         static messageTemplate = 'No such session: {{sessionId}}';

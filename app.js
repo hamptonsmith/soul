@@ -1,258 +1,271 @@
 'use strict';
 
-const argon2 = require('argon2');
+const accessAttemptsRoutes = require('./http/accessAttempts');
 const bodyParser = require('koa-bodyparser');
-const Bottle = require('bottlejs');
+const bs58 = require('bs58');
+const clone = require('clone');
+const ConsoleErrorReporter = require('./utils/ConsoleErrorReporter');
+const CSON = require('cson-parser');
 const crypto = require('crypto');
+const deepequal = require('deepequal');
+const defaultServiceConfig = require('./default-service-config');
+const fsLib = require('fs');
+const http = require('http');
 const Koa = require('koa');
+const lodash = require('lodash');
+const Mustache = require('mustache');
+const optimisticDocument = require('./utils/OptimisticDocument');
+const realmsRoutes = require('./http/realms');
+const RealmsService = require('./services/realms');
 const Router = require('@koa/router');
 const SbError = require('@shieldsbetter/sberror2');
+const sessionsRoutes = require('./http/sessions');
 const SessionsService = require('./services/sessions');
 const slurpUri = require('@shieldsbetter/slurp-uri');
+const UsersService = require('./services/users');
+const util = require('util');
 
 const { MongoClient } = require('mongodb');
 
-class InvalidArgument extends SbError {
-    static messageTemplate = 'Argument "{{name}}" is invalid: {{reason}}';
+class IncorrectUsage extends SbError {
+    static messageTemplate = 'Incorrect usage: {{{message}}}';
 }
 
-class InvalidBodyField extends SbError {
-    static messageTemplate = 'Body field {{fieldPath}} value '
-            + '{{fieldValue}} is invalid: {{reason}}';
+class UnexpectedError extends SbError {
+    static messageTemplate = 'Unexpected error: {{{message}}}';
 }
 
-class IncorrectPassword extends SbError {
-    static messageTemplate = 'Incorrect password.';
-}
+const publicErrors = {};
 
-class MissingEnvironmentVariable extends SbError {
-    static messageTemplate = 'Required environment variable not set: {{name}}';
-}
+module.exports = async (argv, runtimeOpts = {}) => {
+    runtimeOpts = {
+        doBestEffort: (name, pr) => {
+            pr.catch(e => {
+                this.errorReporter.warning(
+                    'Error during best effort action: ' + name, e)
+            });
+        },
+        errorReporter: new ConsoleErrorReporter(runtimeOpts.log || console.log),
+        fs: fsLib,
+        log: console.log,
+        nower: Date.now,
+        schedule: (ms, fn) => setTimeout(fn, ms),
 
-class NoSuchResource extends SbError {
-    static messageTemplate =
-            'No such resource of type "{{type}}": {{description}}';
-}
+        ...runtimeOpts
+    };
 
-class AmbiguousResource extends SbError {
-    static messageTemplate =
-            'Multiple resources of type "{{type}}" meeting criteria: '
-            + '{{description}}';
-}
-
-module.exports = async ({
-    configUri = process.env.CONFIG_URI
-} = {}) => {
-
-    if (!configUri) {
-        throw new MissingEnvironmentVariable({
-            name: 'CONFIG_URI'
+    if (argv.length > 1) {
+        throw new IncorrectUsage({
+            message: 'Too many parameters: ' + JSON.stringify(argv)
         });
     }
 
-    const mongoClient = await MongoClient.connect(config.mongodb.uri);
-    const dbClient = mongoClient.db(config.mongodb.dbName);
-    const sessions = new SessionsService(dbClient);
+    const serverConfig = await loadConfig(argv[0]);
+
+    const mongoClient = await MongoClient.connect(serverConfig.mongodb.uri);
+    const dbClient = mongoClient.db(serverConfig.mongodb.dbName);
+
+    const serviceConfigDoc = await readyService(
+            dbClient.collection('ServiceData'), runtimeOpts);
+
+    let config = {
+        ...serverConfig,
+        ...defaultServiceConfig,
+        ...serviceConfigDoc.getData()
+    };
+
+    serviceConfigDoc.on('documentChanged', () => {
+        config = {
+            ...serverConfig,
+            ...defaultServiceConfig,
+            ...serviceConfigDoc.getData()
+        };
+    });
+
+    const realms = new RealmsService(dbClient, runtimeOpts);
+    const sessions = new SessionsService(dbClient, runtimeOpts);
+
+    const users = new UsersService(dbClient, realms, runtimeOpts);
 
     const services = {
         dbClient,
-        sessions
+        realms,
+        sessions,
+        users
     };
 
     const app = new Koa();
     const router = new Router();
 
     app.use(async (ctx, next) => {
+        ctx.request.id = randomId();
         ctx.services = services;
+
+        // Note that because we reseat `config` when our underlying service
+        // config changes, each request gets a consistent view of config.
+        ctx.state.config = config;
+        ctx.state.baseHref = `${ctx.protocol}://${ctx.host}`;
+
+        try {
+            await next();
+        }
+        catch (e) {
+            console.log(
+                    `\n===== Error handling request ${ctx.request.id} =====`);
+            console.log(ctx.request.method, ctx.request.path);
+
+            if (ctx._matchedRoute) {
+                console.log('Matched route ' + ctx._matchedRoute);
+            }
+            else {
+                console.log('Matched no route.');
+            }
+
+            console.log();
+            console.log(e);
+            while (e.cause) {
+                console.log('Caused by: ', e.cause);
+                e = e.cause;
+            }
+
+            console.log();
+
+            if (publicErrors[e.code]) {
+                ctx.body = {
+                    code: e.code,
+                    details: e.details,
+                    message: e.message,
+                    requestId: ctx.request.id
+                };
+
+                if (typeof publicErrors[e.code] === 'number') {
+                    ctx.status = publicErrors[e.code];
+                }
+                else {
+                    ctx.status = 500;
+                    publicErrors[e.code](e, ctx);
+                }
+            }
+            else {
+                ctx.body = {
+                    code: 'INTERNAL_SERVER_ERROR',
+                    message: 'Internal server error.',
+                    requestId: ctx.request.id
+                };
+
+                ctx.status = 500;
+            }
+        }
+    });
+
+    app.use(async (ctx, next) => {
+        // While intuitively it would make no sense for Koa to try to parse
+        // params in some "clever" way, I can't find that documented anywhere.
+        // So until then, let's be paranoid.
+        for (const [key, value] of Object.entries(ctx.params || {})) {
+            if (typeof value !== 'string') {
+                throw new Error(`URL param "${key}" wasn't a string? Was: `
+                        + util.inspect(value, null, false, false));
+            }
+        }
 
         await next();
     });
 
-    router.get('/realms', async (ctx, next) => {
-        
+    router.get('/health', async (ctx, next) => {
+        ctx.status = 200;
+        ctx.body = {
+            status: 'ok'
+        };
     });
 
-    router.post('/realm', bodyParser(), async (ctx, next) => {
-
-    });
-
-    router.post('/realm/:realmId/session', bodyParser(), async (ctx, next) => {
-        switch (ctx.request.body.mechanism) {
-            case 'dev': {
-
-
-
-                break;
-            }
-            case 'userSpecifierAndPassword': {
-
-                const userId = generateId('usr');
-                await dbClient.collection('Users').insertOne({
-                    _id: userId,
-                    username: ctx.request.body.username,
-                    email: ctx.request.body.email
-                });
-
-                break;
-            }
-        }
-    });
+    accessAttemptsRoutes(router);
+    realmsRoutes(router);
+    sessionsRoutes(router);
 
     app
         .use(router.routes())
         .use(router.allowedMethods());
 
-    app.listen(8080);
+    const httpServer = http.createServer(app.callback());
+    const port = await new Promise((resolve, reject) => {
+        httpServer.listen(serverConfig.port || 0, err => {
+            if (err) {
+                reject(err);
+            }
+            else {
+                resolve(httpServer.address().port);
+            }
+        })
+    });
+
+    return {
+        async close() {
+            await httpServer.close();
+            serviceConfigDoc.close();
+            await mongoClient.close();
+        },
+        url: `http://localhost:${port}`
+    };
 };
 
-function expectError(e, matcher, action) {
-    for (const [key, value] of Object.entries(matcher)) {
-        if (e[key] !== value) {
-            throw new UnexpectedError(e);
-        }
+async function loadConfig(uri) {
+    let config;
+    if (uri) {
+        config = CSON.parse(await slurpUri(uri));
     }
-
-    action();
-}
-
-function doUserSpecifierAndPasswordSessionCreation(ctx) {
-    if (ctx.request.body.existingOk) {
-        let userId, passwordHash;
+    else {
         try {
-            ({ _id: userId, passwordHash } = await getUserBySpecifiers(
-                    ctx.state.services, ctx.params.realmId,
-                    ctx.request.body.assertedUserProperties,
-                    { _id: 1, passwordHash: 1 }));
+            config = CSON.parse(fs.readFileSync('soulconfig.cson', 'utf8'));
         }
         catch (e) {
-            expectError(e, {
-                invalidArgument: true,
-                name: 'userSpecifiers',
-                subcode: 'NO_PROVIDED_USER_SPECIFIERS'
-            }, () => {
+            if (e.code !== 'ENOENT') {
+                throw new UnexpectedError(e, { message: e.message });
+            }
 
-                throw new InvalidBodyField({
-                    fieldPath: 'assertedUserProperties',
-                    fieldValue: ctx.request.body.assertedUserProperties,
-                    reason: `userSpecifiers must contain at least one of `
-                            + `realm ${ctx.params.realmId}'s user specifiers: `
-                            + e.acceptableSpecifiers
-                });
-
+            throw new IncorrectUsage({
+                message: 'Must run in a directory with a `soulconfig.cson` or '
+                        + 'pass a URI to such a config as the sole argument.'
             });
         }
-
-        if (await argon2.verify(passwordHash, ctx.request.body.password)) {
-
-        }
-        else {
-            throw new IncorrectPassword();
-        }
     }
 
-    if (ctx.request.body.createOk) {
-
-    }
+    return config;
 }
 
-async function createSession(services, options) {
-    const sessionId = generateId('sid');
+// Doesn't need to be cryptographically secure.
+function randomId(length = 8) {
+    const alpha = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    let result = '';
+    while (result.length < length) {
+        result += alpha.charAt(Math.floor(Math.random() * alpha.length));
+    }
 
-    const accessTokenKeyBuffer = crypto.randomBytes(32);
-    const refreshTokenKeyBuffer = crypto.randomBytes(32);
+    return result;
+}
 
-    // Future generations will need to be generated from a seed, but the first
-    // generation can just be a random number.
-    const acceptedAccessTokenBuffer = crypto.randomBytes(32);
-    const acceptedRefreshTokenBuffer = crypto.randomBytes(32);
+async function readyService(serviceData, runtimeDeps) {
+    const configDoc =
+            await optimisticDocument(serviceData, 'config', {}, runtimeDeps);
 
-    await services.dbClient.collection('Sessions').insert({
-        _id: sessionId,
-        acceptedAccessNonce: bs58.encode(acceptedAccessTokenBuffer),
-        acceptedRefreshNonce: bs58.encode(acceptedRefreshTokenBuffer),
-        creationTime: new Date(),
-        nextGenAccessKey: bs58.encode(accessTokenKeyBuffer),
-        nextGenRefreshKey: bs58.encode(refreshTokenKeyBuffer)
+    await configDoc.update(async config => {
+        config.signingKeys = config.signingKeys || {};
+
+        if (Object.keys(config.signingKeys).length === 0) {
+            config.signingKeys['s1'] = {
+                createdAt: new Date(runtimeDeps.nower()),
+                default: true,
+                secret: bs58.encode(crypto.randomBytes(32))
+            };
+        }
     });
-}
 
-async function encrypt(iv, key, data) {
-    const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
-
-    const parts = [cipher.update(data)];
-    parts.push(cipher.final());
-    return Buffer.concat(parts);
-}
-
-async function hmacSign(message, key) {
-    return crypto.createHmac('sha256', key).update(message).digest();
-}
-
-async function getUserBySpecifiers(services, realmId, realmConfig,
-        userSpecifiers = {}, projection) {
-    const realmConfig = await getRealmConfig(services, realmId);
-
-    const userSpecifiers = Object.fromEntries(
-            Object.entries(userSpecifiers)
-            .filter(([key]) => realmConfig.userSpecifierSet.includes(key)));
-
-    if (Object.keys(userSpecifiers).length === 0) {
-        throw new InvalidArgument({
-            name: 'userSpecifiers',
-            reason: `userSpecifiers must contain at least one of `
-                    + `realm ${realmId}'s user specifiers: `
-                    + realmConfig.userSpecifierSet,
-            subcode: 'NO_PROVIDED_USER_SPECIFIERS',
-            acceptableSpecifiers: realmConfig.userSpecifierSet
-        });
-    }
-
-    const matches = await ctx.state.services.dbClient.collection('Users')
-            .find(
-                { properties: userSpecifiers },
-                {
-                    limit: 2,
-                    projection
-                })
-            .toArray();
-
-    if (matches.length > 1) {
-        // This is possible since a realm's user specifiers can get
-        // reconfigured over time.
-        throw new AmbiguousResource({
-            type: 'User',
-            description: JSON.stringify(userSpecifiers)
-        });
-    }
-
-    if (matches.length === 0) {
-        throw new NoSuchResource({
-            type: 'User',
-            description: JSON.stringify(userSpecifiers)
-        });
-    }
-
-    return matches[0];
-}
-
-async function getRealmConfig(services, realmId) {
-    const realmConfig = await services.dbClient
-            .collection('Realms').findOne({ _id: realmId });
-
-    if (!realmConfig) {
-        throw new NoSuchResource({
-            type: 'Realm',
-            description: `id ${realmId}`,
-            id: realmId
-        });
-    }
-
-    return realmConfig;
+    return configDoc;
 }
 
 if (require.main === module) {
-    module.exports().catch(e => {
+    module.exports(process.argv.slice(2)).catch(e => {
         console.log(e);
         process.exit(1);
-    })
+    });
 }

@@ -3,7 +3,8 @@
 const axios = require('axios');
 const CSON = require('cson-parser');
 const http = require('http');
-const soul = require('../app2.js');
+const ms = require('ms');
+const soul = require('../app');
 
 const { MongoClient } = require('mongodb');
 
@@ -91,6 +92,7 @@ function fakeNower() {
     let now = new Date('2020-01-01T12:00:00Z').valueOf();
 
     const nower = () => now;
+    nower.advance = t => now = new Date(now.valueOf() + ms(t));
     nower.setNow = n => now = n;
 
     return nower;

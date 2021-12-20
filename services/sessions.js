@@ -80,10 +80,6 @@ module.exports = class SessionsService {
         };
     }
 
-    async refresh(realmId, sid, agentFingerprint, accessSecret, signature) {
-        throw new Error('not implemented');
-    }
-
     async validateSessionToken(
             realmId, sessionId, eraCredentials, agentFingerprint, config) {
 
@@ -101,7 +97,10 @@ module.exports = class SessionsService {
                 .plus(expirationPeriodMs);
 
         if (now > expiresAt) {
-            throw errors.invalidCredentials({ reason: expired });
+            throw errors.invalidCredentials({
+                reason: 'session expired',
+                relog: true
+            });
         }
 
         switch (eraCredentials.index - session.currentEraNumber) {
@@ -120,7 +119,10 @@ module.exports = class SessionsService {
                             .plus(gracePeriodMs);
 
                     if (now > acceptableUntil) {
-                        throw errors.invalidCredentials({ retry: true });
+                        throw errors.invalidCredentials({
+                            reason: 'token expired',
+                            retry: true
+                        });
                     }
                 }
 
@@ -227,7 +229,19 @@ async function advanceEra(sessions, session, oldSecret, newSecret) {
         }
     };
 
-    await sessions.mongoCollection.updateOne(where, update);
+    try {
+        await sessions.mongoCollection.updateOne(where, update);
+    }
+    catch (e) {
+        if (e.code !== 'E11001') {
+            throw errors.unexpectedError(e);
+        }
+
+        throw errors.invalidCredentials({
+            reason: 'expired token',
+            retry: true
+        });
+    }
 
     return fromMongoDoc({
         ...session.toMongoDoc(),
@@ -252,7 +266,10 @@ async function findWithMatchingFingerprintOrInvalidate(
             _id: sessionId
         }));
 
-        throw errors.invalidCredentials({ prejudice: true });
+        throw errors.invalidCredentials({
+            reason: 'fingerprint changed',
+            prejudice: true
+        });
     }
 
     return fromMongoDoc(sessionData);

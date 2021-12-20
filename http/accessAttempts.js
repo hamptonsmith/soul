@@ -3,6 +3,7 @@
 const bodyParser = require('koa-bodyparser');
 const errors = require('../standard-errors');
 const Joi = require('joi');
+const lodash = require('lodash');
 const tokens = require('../utils/tokens');
 
 const { DateTime } = require('luxon');
@@ -23,6 +24,7 @@ module.exports = router => {
         if (ctx.request.body.sessionToken) {
             let decodedSessionToken;
             let session;
+            let error;
 
             try {
                 decodedSessionToken = tokens.decode(
@@ -34,15 +36,25 @@ module.exports = router => {
                         ctx.params.agentFingerprint, ctx.state.config);
             }
             catch (e) {
-                if (e.code !== 'MALFORMED_TOKEN') {
-                    throw e.unexpectedError(e);
+                if (e.code !== 'MALFORMED_TOKEN'
+                        && e.code !== 'INVALID_CREDENTIALS') {
+                    throw errors.unexpectedError(e);
                 }
+
+                error = e;
             }
 
             ctx.status = 200;
             ctx.body = {
-                resolution: 'valid',
-                session: {
+                resolution: session ? 'valid'
+                        : error.prejudice ? 'invalid-with-prejudice'
+                        : 'invalid-no-prejudice',
+                relog: lodash.get(error, 'details.relog'),
+                retry: lodash.get(error, 'details.retry'),
+            };
+
+            if (session) {
+                ctx.body.session = {
                     createdAt: session.createdAt,
                     currentEraStartedAt: session.currentEraStartedAt,
                     currentEraNumber: session.currentEraNumber,
@@ -53,12 +65,12 @@ module.exports = router => {
                     lastUsedAt: session.lastUsedAt,
                     realmId: session.realmId,
                     userId: session.userId
-                }
-            };
+                };
 
-            if (session.nextEraCredentials) {
-                ctx.body.nextSessionToken = tokens.encode(
-                        session.id, session.eraCredentials, ctx.state.config);
+                if (session.nextEraCredentials) {
+                    ctx.body.nextSessionToken = tokens.encode(session.id,
+                            session.eraCredentials, ctx.state.config);
+                }
             }
         }
         else {
