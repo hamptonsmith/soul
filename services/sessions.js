@@ -80,12 +80,37 @@ module.exports = class SessionsService {
         };
     }
 
+    async invalidateSession(realmId, sessionId, reason) {
+        await this.mongoCollection.updateOne(
+                { _id: sessionId },
+                {
+                    $set: {
+                        invalidated: true,
+                        invalidatedReason: reason
+                    }
+                });
+    }
+
     async validateSessionToken(
             realmId, sessionId, eraCredentials, agentFingerprint, config) {
 
         let nextEraCredentials;
         let session = await findWithMatchingFingerprintOrInvalidate(
                 this, realmId, sessionId, agentFingerprint);
+
+        if (!session) {
+            throw errors.invalidCredentials({
+                reason: 'session expired, probably',
+                relog: true
+            });
+        }
+
+        if (session.invalidated) {
+            throw errors.invalidCredentials({
+                reason: 'session invalidated',
+                relog: true
+            });
+        }
 
         const now = DateTime.fromJSDate(new Date(this.nower()));
 
@@ -103,92 +128,123 @@ module.exports = class SessionsService {
             });
         }
 
-        switch (eraCredentials.index - session.currentEraNumber) {
-            case -1: {
-                // The user has presented a token from the last era.
+        const tokenEraOffset = eraCredentials.index - session.currentEraNumber;
+        if (tokenEraOffset < -1) {
+            // Someone has presented a very old token.
 
-                if (session.previousEraSecret
-                        && eraCredentials.secret.equals(
-                                session.previousEraSecret)) {
-                    const gracePeriodMs = ms(
-                            session.tokenGracePeriodDuration
-                            || config.defaultSessionTokenGracePeriodDuration);
+            await this.doBestEffort('invalidate session (1)',
+                    this.invalidateSession(realmId, sessionId,
+                            'presented ancient token'));
 
-                    const acceptableUntil =
-                            DateTime.fromJSDate(session.currentEraStartedAt)
-                            .plus(gracePeriodMs);
+            throw errors.invalidCredentials({
+                prejudice: true,
+                reason: 'ancient token'
+            });
+        }
+        else if (tokenEraOffset === -1) {
+            // The user has presented a token from the last era.
 
-                    if (now > acceptableUntil) {
-                        throw errors.invalidCredentials({
-                            reason: 'token expired',
-                            retry: true
-                        });
-                    }
-                }
+            if (session.previousEraSecret
+                    && eraCredentials.secret.equals(
+                            session.previousEraSecret)) {
+                const gracePeriodMs = ms(
+                        session.tokenGracePeriodDuration
+                        || config.defaultSessionTokenGracePeriodDuration);
 
-                break;
-            }
-            case 0: {
-                // The user has presented a token from the current era.
-
-                if (!eraCredentials.secret.equals(session.currentEraSecret)) {
-                    this.doBestEffort(this.mongoCollection.deleteAll({
-                        _id: sessionId
-                    }));
-
-                    throw errors.invalidCredentials({
-                        prejudice: true,
-                        reason: 'bad secret'
-                    });
-                }
-
-                const eraDuration = ms(
-                        session.tokenEraDuration
-                        || config.defaultSessionTokenEraDuration);
-
-                const sunsetsAt =
+                const acceptableUntil =
                         DateTime.fromJSDate(session.currentEraStartedAt)
-                        .plus(eraDuration);
+                        .plus(gracePeriodMs);
 
-                if (now >= sunsetsAt) {
-                    // These credentials are fine, but this era is sunsetting,
-                    // so let's suggest some next-era credentials.
-
-                    const nextEraSecret = crypto.randomBytes(32);
-                    nextEraCredentials = {
-                        index: session.currentEraNumber + 1,
-                        secret: nextEraSecret,
-                        signature: sign(
-                                nextEraSecret, session.nextEraAuthenticityKey)
-                    };
-                }
-
-                break;
-            }
-            case 1: {
-                // The user has presented a token from the next era.
-                if (!crypto
-                        .createHmac('sha256', session.nextEraAuthenticityKey)
-                        .update(eraCredentials.secret).digest()
-                        .equals(eraCredentials.signature)) {
-                    this.doBestEffort(this.mongoCollection.deleteAll({
-                        _id: sessionId
-                    }));
-
+                if (now > acceptableUntil) {
                     throw errors.invalidCredentials({
-                        prejudice: true,
-                        reason: 'bad secret'
+                        reason: 'token expired',
+                        retry: true
                     });
                 }
-
-                session = await advanceEra(this, session,
-                        session.currentEraSecret, eraCredentials.secret);
-
-                break;
             }
-            default: {
-                throw new Error();
+            else {
+                await this.doBestEffort('invalidate session (1)',
+                        this.invalidateSession(
+                            realmId, sessionId,
+                            'presented token from alternate timeline'
+                        ));
+
+                throw errors.invalidCredentials({
+                    prejudice: true,
+                    reason: 'bad secret'
+                });
             }
+        }
+        else if (tokenEraOffset === 0) {
+            // The user has presented a token from the current era.
+
+            if (!eraCredentials.secret.equals(session.currentEraSecret)) {
+                // Someone has presented a token from an alternate timeline.
+
+                await this.doBestEffort('invalidate session (2)',
+                        this.invalidateSession(
+                            realmId, sessionId,
+                            'presented token from alternate timeline'
+                        ));
+
+                throw errors.invalidCredentials({
+                    prejudice: true,
+                    reason: 'bad secret'
+                });
+            }
+
+            const eraDuration = ms(
+                    session.tokenEraDuration
+                    || config.defaultSessionTokenEraDuration);
+
+            const sunsetsAt =
+                    DateTime.fromJSDate(session.currentEraStartedAt)
+                    .plus(eraDuration);
+
+            if (now >= sunsetsAt) {
+                // These credentials are fine, but this era is sunsetting,
+                // so let's suggest some next-era credentials.
+
+                const nextEraSecret = crypto.randomBytes(32);
+                nextEraCredentials = {
+                    index: session.currentEraNumber + 1,
+                    secret: nextEraSecret,
+                    signature: sign(
+                            nextEraSecret, session.nextEraAuthenticityKey)
+                };
+            }
+        }
+        else if (tokenEraOffset === 1) {
+            // The user has presented a token from the next era.
+            if (!crypto
+                    .createHmac('sha256', session.nextEraAuthenticityKey)
+                    .update(eraCredentials.secret).digest()
+                    .equals(eraCredentials.signature)) {
+
+                await this.doBestEffort('invalidate session (3)',
+                        this.invalidateSession(realmId, sessionId,
+                                'presented token from alternate timeline'));
+
+                throw errors.invalidCredentials({
+                    prejudice: true,
+                    reason: 'bad secret'
+                });
+            }
+
+            session = await advanceEra(this, session, session.currentEraSecret,
+                    eraCredentials.secret);
+        }
+        else {
+            // The token is from the far future? Really we need to blow up the
+            // entire world, but for a start we can destroy this session.
+            await this.doBestEffort('invalidate session (4)',
+                    this.invalidateSession(realmId, sessionId,
+                            'presented far future token'));
+
+            throw errors.invalidCredentials({
+                prejudice: true,
+                reason: 'far future token'
+            });
         }
 
         await this.doBestEffort('update session lastUsedAt field',
@@ -262,9 +318,12 @@ async function findWithMatchingFingerprintOrInvalidate(
 
     if (sessionData.agentFingerprint
             && agentFingerprint !== sessionData.agentFingerprint) {
-        sessions.doBestEffort(sessions.mongoCollection.deleteAll({
-            _id: sessionId
-        }));
+
+        await sessions.doBestEffort('invalidate session (4)',
+                sessions.invalidateSession(
+                    realmId, sessionId,
+                    'agent fingerprint changed'
+                ));
 
         throw errors.invalidCredentials({
             reason: 'fingerprint changed',
