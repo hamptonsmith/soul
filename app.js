@@ -22,6 +22,7 @@ const SbError = require('@shieldsbetter/sberror2');
 const sessionsRoutes = require('./http/sessions');
 const SessionsService = require('./services/sessions');
 const slurpUri = require('@shieldsbetter/slurp-uri');
+const standardEndpoints = require('./utils/standard-endpoints');
 const UsersService = require('./services/users');
 const util = require('util');
 
@@ -45,7 +46,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
                     'Error during best effort action: ' + name, e)
             });
         },
-        errorReporter: new ConsoleErrorReporter(runtimeOpts.log || console.log),
+        errorReporter: new ConsoleErrorReporter(runtimeOpts.log || ctx.state.log),
         fs: fsLib,
         log: console.log,
         nower: Date.now,
@@ -105,30 +106,31 @@ module.exports = async (argv, runtimeOpts = {}) => {
         // config changes, each request gets a consistent view of config.
         ctx.state.config = config;
         ctx.state.baseHref = `${ctx.protocol}://${ctx.host}`;
+        Object.assign(ctx.state, runtimeOpts);
 
         try {
             await next();
         }
         catch (e) {
-            console.log(
+            ctx.state.log(
                     `\n===== Error handling request ${ctx.request.id} =====`);
-            console.log(ctx.request.method, ctx.request.path);
+            ctx.state.log(ctx.request.method, ctx.request.path);
 
             if (ctx._matchedRoute) {
-                console.log('Matched route ' + ctx._matchedRoute);
+                ctx.state.log('Matched route ' + ctx._matchedRoute);
             }
             else {
-                console.log('Matched no route.');
+                ctx.state.log('Matched no route.');
             }
 
-            console.log();
-            console.log(e);
+            ctx.state.log();
+            ctx.state.log(e.stack);
             while (e.cause) {
-                console.log('Caused by: ', e.cause);
+                ctx.state.log('Caused by: ', e.cause.stack);
                 e = e.cause;
             }
 
-            console.log();
+            ctx.state.log();
 
             if (publicErrors[e.code]) {
                 ctx.body = {
@@ -179,9 +181,9 @@ module.exports = async (argv, runtimeOpts = {}) => {
         };
     });
 
-    accessAttemptsRoutes(router);
-    realmsRoutes(router);
-    sessionsRoutes(router);
+    standardEndpoints(router, accessAttemptsRoutes);
+    standardEndpoints(router, realmsRoutes);
+    standardEndpoints(router, sessionsRoutes);
 
     app
         .use(router.routes())

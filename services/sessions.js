@@ -3,11 +3,11 @@
 const bs58 = require('bs58');
 const crypto = require('crypto');
 const errors = require('../standard-errors');
-const Joi = require('joi');
 const generateId = require('../utils/generate-id');
 const ms = require('ms');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const SbError = require('@shieldsbetter/sberror2');
+const validate = require('../utils/validator');
 
 const { DateTime } = require('luxon');
 
@@ -31,15 +31,11 @@ module.exports = class SessionsService {
 
     async create(
             realmId, /* nullable */ agentFingerprint, /* nullable */ userId) {
-        Joi.assert({
-            agentFingerprint,
-            realmId,
-            userId
-        }, Joi.object({
-            agentFingerprint: Joi.string().optional().min(0).max(1000),
-            realmId: Joi.string().required().min(0).max(100),
-            userId: Joi.string().optional().min(0).max(100)
-        }).strict());
+        validate({ realmId, agentFingerprint, userId }, check => ({
+            realmId: check.string({ minLength: 0, maxLength: 100}),
+            agentFingerprint: check.string({ minLength: 0, maxLength: 1000 }),
+            userId: check.string({ minLength: 0, maxLength: 100 })
+        }));
 
         const id = generateId('sid');
         const now = new Date(this.nower());

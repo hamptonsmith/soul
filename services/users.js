@@ -3,9 +3,9 @@
 const crypto = require('crypto');
 const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
-const Joi = require('joi');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const SbError = require('@shieldsbetter/sberror2');
+const validate = require('../utils/validator');
 
 module.exports = class UsersService {
     constructor(dbClient, realms, { nower }) {
@@ -30,13 +30,10 @@ module.exports = class UsersService {
     }
 
     async create(realmId, metadata = {}, { id = generateId('usr') } = {}) {
-        Joi.assert({
-            realmId,
-            metadata
-        }, Joi.object({
-            realmId: Joi.string().required().min(1).max(100),
-            metadata: metadataValidation()
-        }).strict());
+        validate({ realmId, metadata, id }, check => ({
+            realmId: check.string({ minLength: 1, maxLength: 100 }),
+            metadata: metadataValidation(check)
+        }));
 
         const realm = this.realms.fetchById(realmId);
 
@@ -88,30 +85,26 @@ module.exports = class UsersService {
     }
 
     async fetchById(realmId, userId) {
-        Joi.assert(realmId, Joi.string().min(1).max(100).required());
-        Joi.assert(userId, Joi.string().min(1).max(100).required());
+        validate({ realmId, userId }, check => ({
+            realmId: check.string({ minLength: 1, maxLength: 100 }),
+            userId: check.string({ minLength: 1, maxLength: 100 })
+        }));
 
         return fromMongoDoc(
                 this.mongoCollection.findOne({ _id: userId, realmId }));
     }
 
     async fuzzyFind(realmId, /* nullable */ userId, metadata = {}) {
-        Joi.assert({
-            realmId,
-            userId,
-            metadata
-        }, Joi.object({
-            realmId: Joi.string().require().min(1).max(100),
-            userId: Joi.string().optional().min(1).max(100),
-            metadata: metadataValidation()
+        validate({ realmId, userId, metadata }, check => ({
+            realmId: check.string({ minLength: 1, maxLength: 100 }),
+            userId: check.string({ minLength: 1, maxLength: 100 }),
+            metadata: [
+                ...metadataValidation(check),
 
-                // Additionally, no arrays...
-                .pattern(/^.*$/, [
-                    Joi.boolean(),
-                    Joi.number(),
-                    Joi.string()
-                ])
-        }).strict());
+                // And also, no arrays...
+                check.union(check.boolean(), check.number(), check.string())
+            ]
+        }));
 
         const search = {};
 
@@ -146,25 +139,31 @@ function fromMongoDoc(d) {
     }
 }
 
-function metadataValidation() {
-    return Joi.object()
-            .pattern(/^.*$/, [
-                Joi.boolean(),
-                Joi.number(),
-                Joi.string(),
-                Joi.array().items(Joi.alternatives().try(
-                    Joi.boolean(),
-                    Joi.number(),
-                    Joi.string()
-                )).strict()
-            ])
-            .custom(v => {
-                if (JSON.stringify(v).length > 5000) {
-                    throw new Error('Metadata must serialize to JSON '
-                            + 'at most 5000 utf8 codepoints in '
-                            + 'length.  Got: ' + JSON.stringify(v));
-                }
-
-                return v;
-            });
+function metadataValidation(check) {
+    return [
+        (check, metadata) => {
+            if (JSON.stringify(metadata).length > 5000) {
+                throw new check.ValidationError('Metadata must '
+                        + 'serialize to JSON at most 5000 utf8 '
+                        + 'codepoints in length.');
+            }
+        },
+        check.object({}, {
+            unknownEntries: {
+                key: check.string({ regexp: /^\w{0,50}$/ }),
+                value: check.union(
+                    check.boolean(),
+                    check.string(),
+                    check.number(),
+                    check.array({
+                        elements: check.union(
+                            check.boolean(),
+                            check.string(),
+                            check.number()
+                        )
+                    })
+                )
+            }
+        })
+    ];
 }

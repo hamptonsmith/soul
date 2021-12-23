@@ -30,7 +30,7 @@ module.exports = (...args) => async t => {
     try {
         server = await soul(
             [`data:text/plain,${CSON.stringify(config)}`],
-            { nower }
+            { log: t.log, nower }
         );
 
         await fn(t, {

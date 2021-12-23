@@ -1,7 +1,7 @@
 'use strict';
 
 const bs58 = require('bs58');
-const Joi = require('joi');
+const validate = require('./validator');
 
 module.exports = class PageableCollectionOrder {
     constructor(id, collection, fields, map, filters = {}) {
@@ -19,13 +19,10 @@ module.exports = class PageableCollectionOrder {
     }
 
     async find(filters = {}, after, limit = 50) {
-        Joi.assert({
-            after,
-            limit
-        }, Joi.object({
-            after: Joi.string().optional(),
-            limit: Joi.number().required().min(1).max(100)
-        }).strict());
+        validate({ after, limit }, check => ({
+            after: check.optional(check.string()),
+            limit: check.number({ min: 1, max: 100 })
+        }));
 
         let query = {};
         for (const [key, value] of Object.entries(filters)) {

@@ -21,7 +21,6 @@
     "clone": "^2.1.2",
     "cson-parser": "^4.0.9",
     "deepequal": "^0.0.1",
-    "joi": "^17.5.0",
     "koa": "^2.13.3",
     "koa-bodyparser": "^4.3.0",
     "lodash": "^4.17.21",

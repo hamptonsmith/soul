@@ -3,8 +3,8 @@
 const crypto = require('crypto');
 const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
-const Joi = require('joi');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
+const validate = require('../utils/validator');
 
 module.exports = class RealmsService {
     constructor(dbClient, { nower }) {
@@ -23,14 +23,17 @@ module.exports = class RealmsService {
     }
 
     async create(friendlyName, userSpecifierSet) {
-        Joi.assert({
-            friendlyName,
-            userSpecifierSet
-        }, Joi.object({
-            friendlyName: Joi.string().required().min(0).max(100),
-            userSpecifierSet:
-                    Joi.array().required().items(Joi.string().min(1).max(100))
-        }).strict());
+        await validate(friendlyName, check => check.string({
+            minLength: 0,
+            maxLength: 100
+        }));
+
+        await validate(userSpecifierSet, check => check.array({
+            elements: check.string({
+                minLength: 1,
+                maxLength: 100
+            })
+        }));
 
         userSpecifierSet = [...new Set(userSpecifierSet)];
 
@@ -52,7 +55,8 @@ module.exports = class RealmsService {
     }
 
     async fetchById(id) {
-        Joi.assert(id, Joi.string().required());
+        await validate(
+                id, check => check.string({ minLength: 1, maxLength: 100 }));
 
         return this.dbClient.collection('Realms').findOne({ _id: id });
     }
