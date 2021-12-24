@@ -1,5 +1,6 @@
 'use strict';
 
+const bs58 = require('bs58');
 const defaultConfig = require('../../default-service-config');
 const hermeticTest = require('../hermetic-test');
 const test = require('ava');
@@ -74,4 +75,48 @@ test('sessions expire', hermeticTest(
         resolution: 'invalid-no-prejudice',
         relog: true
     });
+}));
+
+test('token w/ unknown protocol', hermeticTest(
+        async (t, { soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const { data: accessAttemptData } = await soul.post(`/realms/${realmId}`
+            + `/accessAttempts`, { sessionTokens: [
+                bs58.encode(Buffer.from([1]))
+            ] });
+
+    t.is(accessAttemptData.resolution, 'invalid-no-prejudice');
+}));
+
+test('token w/ bad signature', hermeticTest(
+        async (t, { soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const { data: accessAttemptData } = await soul.post(`/realms/${realmId}`
+            + `/accessAttempts`, { sessionTokens: [
+
+                // This buffer is full of zeros and thus it has the right
+                // protocol (0), but a nonsense signature (all zeroes) for its
+                // data (seven zeroes)
+                bs58.encode(Buffer.alloc(40))
+            ] });
+
+    t.is(accessAttemptData.resolution, 'invalid-no-prejudice');
+}));
+
+test('token creates error', hermeticTest(
+        async (t, { soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const { data: accessAttemptData } = await soul.post(`/realms/${realmId}`
+            + `/accessAttempts`, { sessionTokens: [
+                // This isn't base58 and so will throw
+                '!@#$%^&*()_+'
+            ] });
+
+    t.is(accessAttemptData.resolution, 'invalid-no-prejudice');
 }));

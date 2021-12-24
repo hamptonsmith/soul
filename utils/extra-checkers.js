@@ -10,7 +10,7 @@ module.exports = {
     sessionToken() {
         return (check, actual) => {
             check.appendSchema(check.string({ minLength: 1, maxLength: 1000 }));
-        }
+        };
     },
     soulId(prefix) {
         return (check, actual) => {
@@ -23,12 +23,12 @@ module.exports = {
             }
 
             if (actual.length > 100) {
-                throw new this.ValidatorError('id too long', actual);
+                throw new this.ValidationError('id too long', actual);
             }
 
             const c = '[A-Za-z0-9]';
             if (!new RegExp(`^${c}+_${c}+$`).test(actual)) {
-                throw new this.ValidatorError(`not id shaped`, actual);
+                throw new this.ValidationError(`not id shaped`, actual);
             }
         };
     }

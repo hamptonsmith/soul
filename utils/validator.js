@@ -221,13 +221,13 @@ const stringOpts = {
     maxLength: (max, str) => {
         if (str.length > max) {
             throw new ValidationError(`greater than ${max} characters`,
-                    arr.length);
+                    str.length);
         }
     },
     minLength: (min, str) => {
         if (str.length < min) {
             throw new ValidationError(`fewer than ${min} characters`,
-                    arr.length);
+                    str.length);
         }
     },
     regexp: (r, str) => {
@@ -271,7 +271,7 @@ var defaultChecker = {
             throw new ValidationError(message, actual)
         };
     },
-    number(opts) {
+    number(opts = {}) {
         return async (check, actual) => {
             if (typeof actual !== 'number') {
                 throw new ValidationError('not a number', actual);
@@ -282,7 +282,7 @@ var defaultChecker = {
             }
         };
     },
-    object(shape, opts) {
+    object(shape, opts = {}) {
         return async (check, actual) => {
             if (typeof actual !== 'object') {
                 throw new ValidationError('not an object', actual);
@@ -313,11 +313,14 @@ var defaultChecker = {
             }
         };
     },
-    switch(distinguisher, alternatives = {}, onNoMatch = () => {}) {
+    switch(distinguisher, alternatives = {}, onNoMatch) {
         return async (check, actual) => {
             const key = await distinguisher(actual);
 
-            if (!alternatives[key]) {
+            if (alternatives[key]) {
+                this.appendSchema(alternatives[key]);
+            }
+            else {
                 if (onNoMatch) {
                     this.appendSchema(onNoMatch);
                 }
@@ -325,8 +328,6 @@ var defaultChecker = {
                     throw new ValidationError('validation failed');
                 }
             }
-
-            this.appendSchema(alternatives[key]);
         };
     },
     union(...alternatives) {

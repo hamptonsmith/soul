@@ -26,6 +26,8 @@ module.exports = (...args) => async t => {
 
     const nower = fakeNower();
 
+    const dbClient = await MongoClient.connect(config.mongodb.uri);
+
     let server;
     try {
         server = await soul(
@@ -36,6 +38,7 @@ module.exports = (...args) => async t => {
         await fn(t, {
             baseHref: server.url,
             config,
+            dbClient,
             doBestEffort: async (name, pr) => await pr,
             nower,
             soul: axios.create({ baseURL: server.url })
@@ -64,7 +67,6 @@ module.exports = (...args) => async t => {
             await server.close();
         }
 
-        const dbClient = await MongoClient.connect(config.mongodb.uri);
         await dbClient.db(config.mongodb.dbName).dropDatabase();
         await dbClient.close();
     }

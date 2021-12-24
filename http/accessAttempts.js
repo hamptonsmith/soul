@@ -22,27 +22,29 @@ module.exports = {
                 const decodedTokens = tokens.decodeValid(
                         ctx.request.body.sessionTokens, ctx.state.config);
 
-                if (Object.keys(decodedTokens).length === 0) {
-                    throw errors.invalidCredentials({
-                        reason: 'no valid tokens'
-                    });
-                }
-
-                const sessionId = Object.keys(decodedTokens)[0];
-                const { tokens: credentialList } = decodedTokens[sessionId];
-
                 let session;
                 let error;
 
                 try {
+                    if (Object.keys(decodedTokens).length === 0) {
+                        throw errors.invalidCredentials({
+                            reason: 'no valid tokens'
+                        });
+                    }
+
+                    const sessionId = Object.keys(decodedTokens)[0];
+                    const { tokens: credentialList } = decodedTokens[sessionId];
+
                     await remapValidationErrorPaths({
                         '/realmId': '/path/realmId',
                         '/sessionId': '/body/sessionTokens',
                         '/agentFingerprint': '/body/agentFingerprint'
                     }, async () => {
                         session = await ctx.services.sessions.validateSessionCredentials(
-                                ctx.params.realmId, sessionId, credentialList,
-                                ctx.params.agentFingerprint, ctx.state.config);
+                                ctx.params.realmId, sessionId,
+                                credentialList,
+                                ctx.params.agentFingerprint,
+                                ctx.state.config);
                     });
                 }
                 catch (e) {
@@ -50,8 +52,6 @@ module.exports = {
                             && e.code !== 'INVALID_CREDENTIALS') {
                         throw errors.unexpectedError(e);
                     }
-
-                    ctx.state.log(e.stack, e.details);
 
                     error = e;
                 }
