@@ -18,7 +18,7 @@ test('create dev session w/ new user', hermeticTest(
     });
 
     const { data: accessAttemptData } = await soul.post(`/realms/${realmId}`
-            + `/accessAttempts`, { sessionToken: sessionData.sessionToken });
+            + `/accessAttempts`, { sessionTokens: sessionData.sessionTokens });
 
     t.is(accessAttemptData.resolution, 'valid');
     t.is(accessAttemptData.session.userId, 'usr_testuser');
@@ -45,7 +45,7 @@ test('create dev session w/ existing user', hermeticTest(
     });
 
     const { data: accessAttemptData } = await soul.post(`/realms/${realmId}`
-            + `/accessAttempts`, { sessionToken: sessionData.sessionToken });
+            + `/accessAttempts`, { sessionTokens: sessionData.sessionTokens });
 
     t.is(accessAttemptData.resolution, 'valid');
     t.is(accessAttemptData.session.userId, 'usr_testuser');
@@ -68,7 +68,7 @@ test('sessions expire', hermeticTest(
     nower.advance('1s');
 
     const { data: accessAttemptData } = await soul.post(`/realms/${realmId}`
-            + `/accessAttempts`, { sessionToken: sessionData.sessionToken });
+            + `/accessAttempts`, { sessionTokens: sessionData.sessionTokens });
 
     t.deepEqual(accessAttemptData, {
         resolution: 'invalid-no-prejudice',

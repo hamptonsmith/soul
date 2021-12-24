@@ -3,41 +3,55 @@
 const bodyParser = require('koa-bodyparser');
 const errors = require('../standard-errors');
 const lodash = require('lodash');
-const schema = require('../utils/validator');
 const tokens = require('../utils/tokens');
 
 const { DateTime } = require('luxon');
+const { remapValidationErrorPaths } = require('./http-utils');
 
 module.exports = {
     'POST /realms/:realmId/accessAttempts': {
         validator: {
             body: {
-                sessionToken: check => check.string({
-                    minLength: 10,
-                    maxLength: 500
+                sessionTokens: check => check.array({
+                    elements: check.sessionToken()
                 })
             }
         },
         handler: async (ctx, next) => {
-            if (ctx.request.body.sessionToken) {
-                let decodedSessionToken;
+            if (ctx.request.body.sessionTokens) {
+                const decodedTokens = tokens.decodeValid(
+                        ctx.request.body.sessionTokens, ctx.state.config);
+
+                if (Object.keys(decodedTokens).length === 0) {
+                    throw errors.invalidCredentials({
+                        reason: 'no valid tokens'
+                    });
+                }
+
+                const sessionId = Object.keys(decodedTokens)[0];
+                const { tokens: credentialList } = decodedTokens[sessionId];
+
                 let session;
                 let error;
 
                 try {
-                    decodedSessionToken = tokens.decode(
-                            ctx.request.body.sessionToken, ctx.state.config);
-
-                    session = await ctx.services.sessions.validateSessionToken(
-                            ctx.params.realmId, decodedSessionToken.sessionId,
-                            decodedSessionToken.eraCredentials,
-                            ctx.params.agentFingerprint, ctx.state.config);
+                    await remapValidationErrorPaths({
+                        '/realmId': '/path/realmId',
+                        '/sessionId': '/body/sessionTokens',
+                        '/agentFingerprint': '/body/agentFingerprint'
+                    }, async () => {
+                        session = await ctx.services.sessions.validateSessionCredentials(
+                                ctx.params.realmId, sessionId, credentialList,
+                                ctx.params.agentFingerprint, ctx.state.config);
+                    });
                 }
                 catch (e) {
                     if (e.code !== 'MALFORMED_TOKEN'
                             && e.code !== 'INVALID_CREDENTIALS') {
                         throw errors.unexpectedError(e);
                     }
+
+                    ctx.state.log(e.stack, e.details);
 
                     error = e;
                 }

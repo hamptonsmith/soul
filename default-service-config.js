@@ -1,7 +1,8 @@
 'use strict';
 
 module.exports = {
+    defaultSessionGoverningPeriodLength: '5m',
     defaultSessionInactivityExpirationDuration: '90d',
     defaultSessionTokenEraDuration: '10m',
-    defaultSessionTokenGracePeriodDuration: '30s'
+    defaultSessionEraGracePeriodDuration: '30s'
 };

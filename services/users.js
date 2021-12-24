@@ -5,9 +5,11 @@ const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const SbError = require('@shieldsbetter/sberror2');
-const validate = require('../utils/validator');
+const validate = require('../utils/soul-validate');
 
 module.exports = class UsersService {
+    static idPrefix = 'usr';
+
     constructor(dbClient, realms, { nower }) {
         this.mongoCollection = dbClient.collection('Users');
         this.nower = nower;
@@ -30,9 +32,10 @@ module.exports = class UsersService {
     }
 
     async create(realmId, metadata = {}, { id = generateId('usr') } = {}) {
-        validate({ realmId, metadata, id }, check => ({
+        await validate({ realmId, metadata, userId: id }, check => ({
             realmId: check.string({ minLength: 1, maxLength: 100 }),
-            metadata: metadataValidation(check)
+            metadata: metadataValidation(check),
+            userId: check.soulId('usr')
         }));
 
         const realm = this.realms.fetchById(realmId);
@@ -53,10 +56,6 @@ module.exports = class UsersService {
                     $neq: metadata[specifier]
                 };
             }
-        }
-
-        if (!id) {
-            id = generateId('usr');
         }
 
         const now = new Date(this.nower());
@@ -85,7 +84,7 @@ module.exports = class UsersService {
     }
 
     async fetchById(realmId, userId) {
-        validate({ realmId, userId }, check => ({
+        await validate({ realmId, userId }, check => ({
             realmId: check.string({ minLength: 1, maxLength: 100 }),
             userId: check.string({ minLength: 1, maxLength: 100 })
         }));
@@ -95,7 +94,7 @@ module.exports = class UsersService {
     }
 
     async fuzzyFind(realmId, /* nullable */ userId, metadata = {}) {
-        validate({ realmId, userId, metadata }, check => ({
+        await validate({ realmId, userId, metadata }, check => ({
             realmId: check.string({ minLength: 1, maxLength: 100 }),
             userId: check.string({ minLength: 1, maxLength: 100 }),
             metadata: [

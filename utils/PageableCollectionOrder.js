@@ -19,7 +19,7 @@ module.exports = class PageableCollectionOrder {
     }
 
     async find(filters = {}, after, limit = 50) {
-        validate({ after, limit }, check => ({
+        await validate({ after, limit }, check => ({
             after: check.optional(check.string()),
             limit: check.number({ min: 1, max: 100 })
         }));

@@ -6,16 +6,21 @@ const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
 const ms = require('ms');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
+const RealmsService = require('./realms');
 const SbError = require('@shieldsbetter/sberror2');
-const validate = require('../utils/validator');
+const UsersService = require('./users');
+const validate = require('../utils/soul-validate');
 
 const { DateTime } = require('luxon');
 
 module.exports = class SessionsService {
-    constructor(dbClient, { doBestEffort, nower }) {
+    static idPrefix = 'sid';
+
+    constructor(dbClient, realmsService, { doBestEffort, nower }) {
         this.doBestEffort = doBestEffort;
         this.mongoCollection = dbClient.collection('Sessions');
         this.nower = nower;
+        this.realms = realmsService;
 
         this.byCreationTime = new PageableCollectionOrder(
                 'createdAt',
@@ -30,25 +35,33 @@ module.exports = class SessionsService {
     }
 
     async create(
-            realmId, /* nullable */ agentFingerprint, /* nullable */ userId) {
-        validate({ realmId, agentFingerprint, userId }, check => ({
-            realmId: check.string({ minLength: 0, maxLength: 100}),
-            agentFingerprint: check.string({ minLength: 0, maxLength: 1000 }),
-            userId: check.string({ minLength: 0, maxLength: 100 })
+            realmId, /* nullable */ agentFingerprint, /* nullable */ userId,
+            config) {
+        await validate({ realmId, agentFingerprint, userId }, check => ({
+            realmId: check.soulId(RealmsService.idPrefix),
+            agentFingerprint: check.agentFingerprint(),
+            userId: check.soulId(UsersService.idPrefix)
         }));
 
-        const id = generateId('sid');
+        const realm = this.realms.fetchById(realmId);
+
+        const governingPeriodLength = ms(realm.governingPeriodLength
+                || config.defaultSessionGoverningPeriodLength);
+
+        const id = generateId(SessionsService.idPrefix);
         const now = new Date(this.nower());
+        const tokenId = generateId('tkn');
 
         const session = {
-            currentEraSecret: crypto.randomBytes(32),
+            acceptedCurrentEraTokenIds: [tokenId],
+            acceptedPreviousEraTokenIds: [],
             agentFingerprint,
             createdAt: now,
             currentEraStartedAt: now,
             currentEraNumber: 0,
+            governingPeriodLength,
             id: id,
             lastUsedAt: now,
-            nextEraAuthenticityKey: crypto.randomBytes(32),
             realmId,
             userId
         };
@@ -57,19 +70,8 @@ module.exports = class SessionsService {
 
         return {
             eraCredentials: {
-                index: 0,
-                secret: session.currentEraSecret,
-
-                // Here we're returning the current era's secret, whose use in a
-                // session token requires only knowing the secret, hence the
-                // signature is irrelevant. There is no "current generation
-                // authenticity key" and thus even if we -wanted- to sign this
-                // thing, there's nothing sensible to sign it with. We go ahead
-                // and return some random bytes just to keep things mostly
-                // consistent. After all, since we don't know what the current
-                // generation's signing key hypothetically "might have been",
-                // these bytes could well be the signature...
-                signature: crypto.randomBytes(32)
+                eraNumber: 0,
+                tokenId: tokenId
             },
 
             ...session
@@ -87,8 +89,29 @@ module.exports = class SessionsService {
                 });
     }
 
-    async validateSessionToken(
-            realmId, sessionId, eraCredentials, agentFingerprint, config) {
+    async validateSessionCredentials(
+            realmId, sessionId, credentials, agentFingerprint, config) {
+        await validate({ realmId, sessionId, agentFingerprint }, check => ({
+            realmId: check.soulId(RealmsService.idPrefix),
+            sessionId: check.soulId(SessionsService.idPrefix),
+            agentFingerprint: check.agentFingerprint()
+        }));
+
+        const latestEraRepresented = credentials.reduce(
+                (accum, { eraNumber }) => eraNumber > accum ? eraNumber : accum,
+                0);
+
+        const unretiredCredentials = [];
+        const retiredCredentials = [];
+
+        for (const c of credentials) {
+            if (c.eraNumber === latestEraRepresented) {
+                unretiredCredentials.push(c);
+            }
+            else {
+                retiredCredentials.push(c);
+            }
+        }
 
         let nextEraCredentials;
         let session = await findWithMatchingFingerprintOrInvalidate(
@@ -124,7 +147,12 @@ module.exports = class SessionsService {
             });
         }
 
-        const tokenEraOffset = eraCredentials.index - session.currentEraNumber;
+        const mongoUpdate = {
+            $push: {},
+            $set: { lastUsedAt: now }
+        };
+
+        const tokenEraOffset = latestEraRepresented - session.currentEraNumber;
         if (tokenEraOffset < -1) {
             // Someone has presented a very old token.
 
@@ -140,25 +168,14 @@ module.exports = class SessionsService {
         else if (tokenEraOffset === -1) {
             // The user has presented a token from the last era.
 
-            if (session.previousEraSecret
-                    && eraCredentials.secret.equals(
-                            session.previousEraSecret)) {
-                const gracePeriodMs = ms(
-                        session.tokenGracePeriodDuration
-                        || config.defaultSessionTokenGracePeriodDuration);
+            const additionalTokenIds = setSubtract(
+                    unretiredCredentials.map(({ tokenId }) => tokenId),
+                    session.acceptedPreviousEraTokenIds);
 
-                const acceptableUntil =
-                        DateTime.fromJSDate(session.currentEraStartedAt)
-                        .plus(gracePeriodMs);
+            if (additionalTokenIds.length === unretiredCredentials.length) {
+                // None of the provided tokens matched an existing token.
+                // Danger!
 
-                if (now > acceptableUntil) {
-                    throw errors.invalidCredentials({
-                        reason: 'token expired',
-                        retry: true
-                    });
-                }
-            }
-            else {
                 await this.doBestEffort('invalidate session (1)',
                         this.invalidateSession(
                             realmId, sessionId,
@@ -167,17 +184,40 @@ module.exports = class SessionsService {
 
                 throw errors.invalidCredentials({
                     prejudice: true,
-                    reason: 'bad secret'
+                    reason: 'bad credentials'
                 });
             }
+
+            const gracePeriodMs = ms(
+                    session.eraGracePeriodDuration
+                    || config.defaultSessionEraGracePeriodDuration);
+
+            const acceptableUntil =
+                    DateTime.fromJSDate(session.currentEraStartedAt)
+                    .plus(gracePeriodMs);
+
+            if (now > acceptableUntil) {
+                throw errors.invalidCredentials({
+                    reason: 'token expired',
+                    retry: true
+                });
+            }
+
+            mongoUpdate.$push.acceptedPreviousEraTokenIds =
+                    { $each: additionalTokenIds };
         }
         else if (tokenEraOffset === 0) {
             // The user has presented a token from the current era.
 
-            if (!eraCredentials.secret.equals(session.currentEraSecret)) {
-                // Someone has presented a token from an alternate timeline.
+            const additionalTokenIds = setSubtract(
+                    unretiredCredentials.map(({ tokenId }) => tokenId),
+                    session.acceptedCurrentEraTokenIds);
 
-                await this.doBestEffort('invalidate session (2)',
+            if (additionalTokenIds.length === unretiredCredentials.length) {
+                // None of the provided tokens matched an existing token.
+                // Danger!
+
+                await this.doBestEffort('invalidate session (1)',
                         this.invalidateSession(
                             realmId, sessionId,
                             'presented token from alternate timeline'
@@ -185,50 +225,30 @@ module.exports = class SessionsService {
 
                 throw errors.invalidCredentials({
                     prejudice: true,
-                    reason: 'bad secret'
+                    reason: 'bad credentials'
                 });
             }
 
-            const eraDuration = ms(
-                    session.tokenEraDuration
-                    || config.defaultSessionTokenEraDuration);
+            if (now >= DateTime.fromJSDate(
+                    session.currentEraGoverningPeriodEndsAt)) {
+                // These credentials are fine, but this era is in its lame duck
+                // period, so let's suggest some next-era credentials.
 
-            const sunsetsAt =
-                    DateTime.fromJSDate(session.currentEraStartedAt)
-                    .plus(eraDuration);
-
-            if (now >= sunsetsAt) {
-                // These credentials are fine, but this era is sunsetting,
-                // so let's suggest some next-era credentials.
-
-                const nextEraSecret = crypto.randomBytes(32);
+                const nextEraTokenId = crypto.randomBytes(32);
                 nextEraCredentials = {
                     index: session.currentEraNumber + 1,
-                    secret: nextEraSecret,
-                    signature: sign(
-                            nextEraSecret, session.nextEraAuthenticityKey)
+                    tokenId: nextEraTokenId
                 };
             }
+
+            mongoUpdate.$push.acceptedCurrentEraTokenIds =
+                    { $each: additionalTokenIds };
         }
         else if (tokenEraOffset === 1) {
             // The user has presented a token from the next era.
-            if (!crypto
-                    .createHmac('sha256', session.nextEraAuthenticityKey)
-                    .update(eraCredentials.secret).digest()
-                    .equals(eraCredentials.signature)) {
-
-                await this.doBestEffort('invalidate session (3)',
-                        this.invalidateSession(realmId, sessionId,
-                                'presented token from alternate timeline'));
-
-                throw errors.invalidCredentials({
-                    prejudice: true,
-                    reason: 'bad secret'
-                });
-            }
-
-            session = await advanceEra(this, session, session.currentEraSecret,
-                    eraCredentials.secret);
+            session = advanceEra(this, session,
+                    session.acceptedCurrentEraTokenIds,
+                    unretiredCredentials.map(({ tokenId }) => tokenId));
         }
         else {
             // The token is from the far future? Really we need to blow up the
@@ -243,23 +263,24 @@ module.exports = class SessionsService {
             });
         }
 
-        await this.doBestEffort('update session lastUsedAt field',
-                this.mongoCollection.updateOne({
-                    _id: sessionId,
-                    lastUsedAt: { $lt: now }
-                }, {
-                    $set: { lastUsedAt: now }
-                }));
+        await this.mongoCollection.updateOne({
+            _id: sessionId,
+            lastUsedAt: { $lt: now }
+        }, {
+            $set: { lastUsedAt: now }
+        });
 
         return {
             ...session,
 
-            nextEraCredentials
+            nextEraCredentials,
+            retiredCredentials
         };
     }
 };
 
-async function advanceEra(sessions, session, oldSecret, newSecret) {
+async function advanceEra(
+        sessions, session, currentAccepted, nextAccepted) {
     const where = {
         _id: { $eq: session.id },
 
@@ -269,15 +290,13 @@ async function advanceEra(sessions, session, oldSecret, newSecret) {
     };
 
     const now = new Date(sessions.nower());
-
     const update = {
         $set: {
-            currentEraSecret: bs58.encode(newSecret),
+            acceptedCurrentEraTokenIds: nextAccepted,
+            acceptedPreviousEraTokenIds: currentAccepted,
             currentEraStartedAt: now,
             currentEraNumber: currentEraNumber + 1,
-            lastUsedAt: now,
-            nextEraAuthenticityKey: bs58.encode(crypto.randomBytes(32)),
-            previousEraSecret: bs58.encode(oldSecret)
+            lastUsedAt: now
         }
     };
 
@@ -332,17 +351,26 @@ async function findWithMatchingFingerprintOrInvalidate(
 
 function fromMongoDoc(d) {
     return {
+        acceptedCurrentEraTokenIds: d.acceptedCurrentEraTokenIds,
+        acceptedPreviousEraTokenIds: d.acceptedPreviousEraTokenIds,
         agentFingerprint: d.agentFingerprint,
-        currentEraSecret: bs58.decode(d.currentEraSecret),
         createdAt: d.createAt,
         currentEraStartedAt: d.currentEraStartedAt,
         currentEraNumber: d.currentEraNumber,
+        governingPeriodLength: d.governingPeriodLength,
         lastUsedAt: d.lastUsedAt,
         id: d._id,
-        nextEraAuthenticityKey: bs58.decode(d.nextEraAuthenticityKey),
         realmId: d.realmId,
         userId: d.userId
     };
+}
+
+function setSubtract(a1, a2) {
+    const a2Set = new Set(a2);
+
+    const result = a1.filter(el => !a2Set.has(el));
+
+    return result;
 }
 
 function sign(text, secret) {
@@ -352,13 +380,14 @@ function sign(text, secret) {
 function toMongoDoc(o) {
     return {
         _id: o.id,
+        acceptedCurrentEraTokenIds: o.acceptedCurrentEraTokenIds,
+        acceptedPreviousEraTokenIds: o.acceptedPreviousEraTokenIds,
         agentFingerprint: o.agentFingerprint,
-        currentEraSecret: bs58.encode(o.currentEraSecret),
         createdAt: o.createAt,
         currentEraStartedAt: o.currentEraStartedAt,
         currentEraNumber: o.currentEraNumber,
+        governingPeriodLength: o.governingPeriodLength,
         lastUsedAt: o.lastUsedAt,
-        nextEraAuthenticityKey: bs58.encode(o.nextEraAuthenticityKey),
         realmId: o.realmId,
         userId: o.userId
     };

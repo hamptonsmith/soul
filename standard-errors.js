@@ -14,27 +14,19 @@ module.exports = {
         static messageTemplate = 'Invalid credentials.';
     },
     invalidCredentials(details, cause) {
-        // TODO: get rid of this grossness once I once again have control of my
-        //       npm account and can publish the fix...
-        if (cause) {
-            return new this.InvalidCredentials(details, cause);
-        }
-        else {
-            return new this.InvalidCredentials(details);
-        }
+        return new this.InvalidCredentials(details, cause);
     },
     MalformedToken: class extends SbError {
         static messageTemplate = 'Malformed token: {{reason}}';
     },
     malformedToken(reason, details, cause) {
-        // TODO: get rid of this grossness once I once again have control of my
-        //       npm account and can publish the fix...
-        if (cause) {
-            return new this.MalformedToken({ reason, ...details }, cause);
-        }
-        else {
-            return new this.MalformedToken({ reason, ...details });
-        }
+        return new this.MalformedToken({ reason, ...details }, cause);
+    },
+    NoSuchRealm: class extends SbError {
+        static messageTemplate = 'No such realm: {{realmId}}';
+    },
+    noSuchRealm(realmId) {
+        return new this.NoSuchRealm({ realmId });
     },
     NoSuchSession: class extends SbError {
         static messageTemplate = 'No such session: {{sessionId}}';

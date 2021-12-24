@@ -4,9 +4,11 @@ const crypto = require('crypto');
 const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
-const validate = require('../utils/validator');
+const validate = require('../utils/soul-validate');
 
 module.exports = class RealmsService {
+    static idPrefix = 'rlm';
+
     constructor(dbClient, { nower }) {
         this.dbClient = dbClient;
         this.nower = nower;
@@ -55,9 +57,14 @@ module.exports = class RealmsService {
     }
 
     async fetchById(id) {
-        await validate(
-                id, check => check.string({ minLength: 1, maxLength: 100 }));
+        await validate(id, check => check.soulId(RealmsService.idPrefix));
 
-        return this.dbClient.collection('Realms').findOne({ _id: id });
+        const result = this.dbClient.collection('Realms').findOne({ _id: id });
+
+        if (!result) {
+            throw errors.noSuchRealm(id);
+        }
+
+        return result;
     }
 };

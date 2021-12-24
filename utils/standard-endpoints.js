@@ -1,8 +1,8 @@
 'use strict';
 
 const bodyParser = require('koa-bodyparser');
-const validate = require('./validator');
 const lodash = require('lodash');
+const validate = require('./soul-validate');
 
 module.exports = (router, spec) => {
     for (const [endpoint, details] of Object.entries(spec)) {

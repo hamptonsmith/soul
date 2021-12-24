@@ -27,7 +27,7 @@ class ValidationContext {
         this.checker = {};
 
         for (const [methodName, method] of Object.entries(checkerTemplate)) {
-            this.checker[methodName] = method.bind(this);
+            this.checker[methodName] = method.bind(this.checker);
         }
 
         this.checker.appendSchema = s => {
@@ -80,11 +80,16 @@ class ValidationContext {
     }
 }
 
-module.exports = async (value, schema) => {
-    const ctx = new ValidationContext(defaultChecker);
+module.exports = async (value, schema, checkerExtensions) => {
+    const ctx = new ValidationContext({
+        ...defaultChecker,
+        ...checkerExtensions
+    });
 
     await validate(value, schema, ctx);
 };
+
+module.exports.ValidationError = ValidationError;
 
 async function validate(value, schemas, ctx) {
     if (!Array.isArray(schemas)) {
@@ -110,7 +115,11 @@ async function validate(value, schemas, ctx) {
         const typeofS = typeof schema;
         switch (typeofS) {
             case 'function': {
-                await schema(ctx.checker, value);
+                const next = await schema(ctx.checker, value);
+
+                if (next) {
+                    schemas.push(next);
+                }
 
                 while (ctx.additionalSchemas.length > 0) {
                     schemas.push(ctx.additionalSchemas.shift());
@@ -262,7 +271,7 @@ var defaultChecker = {
             throw new ValidationError(message, actual)
         };
     },
-    number() {
+    number(opts) {
         return async (check, actual) => {
             if (typeof actual !== 'number') {
                 throw new ValidationError('not a number', actual);
@@ -282,7 +291,7 @@ var defaultChecker = {
             check.appendSchema(shape);
 
             if (opts.unknownEntries) {
-                ctx.appendUnknownFieldSchemas(opts.unknownEntries);
+                check.appendUnknownFieldSchemas(opts.unknownEntries);
             }
         };
     },
@@ -323,8 +332,26 @@ var defaultChecker = {
     union(...alternatives) {
         return async (check, actual) => {
             // Ineffecient, but we must.
+
+            let success;
+            let message = '';
+
             for (const a of alternatives) {
-                await validate(actual, a, check._ctx);
+                try {
+                    await validate(actual, a, check._ctx);
+                    success = true;
+                }
+                catch (e) {
+                    if (message !== '') {
+                        message += ' and ';
+                    }
+
+                    message += e.message;
+                }
+            }
+
+            if (!success) {
+                throw new check.ValidationError(message, actual);
             }
         };
     }

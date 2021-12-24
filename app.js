@@ -25,6 +25,7 @@ const slurpUri = require('@shieldsbetter/slurp-uri');
 const standardEndpoints = require('./utils/standard-endpoints');
 const UsersService = require('./services/users');
 const util = require('util');
+const validate = require('./utils/validator');
 
 const { MongoClient } = require('mongodb');
 
@@ -36,7 +37,9 @@ class UnexpectedError extends SbError {
     static messageTemplate = 'Unexpected error: {{{message}}}';
 }
 
-const publicErrors = {};
+const publicErrors = {
+    VALIDATION_ERROR: 500
+};
 
 module.exports = async (argv, runtimeOpts = {}) => {
     runtimeOpts = {
@@ -84,8 +87,8 @@ module.exports = async (argv, runtimeOpts = {}) => {
     });
 
     const realms = new RealmsService(dbClient, runtimeOpts);
-    const sessions = new SessionsService(dbClient, runtimeOpts);
 
+    const sessions = new SessionsService(dbClient, realms, runtimeOpts);
     const users = new UsersService(dbClient, realms, runtimeOpts);
 
     const services = {
@@ -123,29 +126,35 @@ module.exports = async (argv, runtimeOpts = {}) => {
                 ctx.state.log('Matched no route.');
             }
 
+            let bestError = e;
+
             ctx.state.log();
-            ctx.state.log(e.stack);
+            ctx.state.log(errorStack(e));
             while (e.cause) {
-                ctx.state.log('Caused by: ', e.cause.stack);
+                ctx.state.log('Caused by: ', errorStack(e.cause));
                 e = e.cause;
+
+                if (e instanceof validate.ValidationError) {
+                    bestError = e;
+                }
             }
 
             ctx.state.log();
 
-            if (publicErrors[e.code]) {
+            if (publicErrors[bestError.code]) {
                 ctx.body = {
-                    code: e.code,
-                    details: e.details,
-                    message: e.message,
+                    code: bestError.code,
+                    details: bestError.details,
+                    message: errorMessage(bestError),
                     requestId: ctx.request.id
                 };
 
-                if (typeof publicErrors[e.code] === 'number') {
-                    ctx.status = publicErrors[e.code];
+                if (typeof publicErrors[bestError.code] === 'number') {
+                    ctx.status = publicErrors[bestError.code];
                 }
                 else {
                     ctx.status = 500;
-                    publicErrors[e.code](e, ctx);
+                    publicErrors[e.code](bestError, ctx);
                 }
             }
             else {
@@ -211,6 +220,31 @@ module.exports = async (argv, runtimeOpts = {}) => {
     };
 };
 
+function errorMessage(e) {
+    if (e instanceof validate.ValidationError) {
+        let valString = util.inspect(e.actualValue, false, null);
+
+        if (valString.length > 100) {
+            valString = valString.substring(0, 97) + '...';
+        }
+
+        return e.path.join('.') + ' is invalid: ' + e.message + '. Got: '
+                + valString;
+    }
+    else {
+        return e.message;
+    }
+}
+
+function errorStack(e) {
+    const oldMessage = errorMessage(e);
+
+    const target = randomId(100);
+    e.message = target;
+
+    return e.stack.replace(target, oldMessage);
+}
+
 async function loadConfig(uri) {
     let config;
     if (uri) {
@@ -251,14 +285,8 @@ async function readyService(serviceData, runtimeDeps) {
             await optimisticDocument(serviceData, 'config', {}, runtimeDeps);
 
     await configDoc.update(async config => {
-        config.signingKeys = config.signingKeys || {};
-
-        if (Object.keys(config.signingKeys).length === 0) {
-            config.signingKeys['s1'] = {
-                createdAt: new Date(runtimeDeps.nower()),
-                default: true,
-                secret: bs58.encode(crypto.randomBytes(32))
-            };
+        if (!config.signingSecret) {
+            config.signingSecret = bs58.encode(crypto.randomBytes(32));
         }
     });
 
