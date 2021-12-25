@@ -75,10 +75,6 @@ module.exports = class PageableCollectionOrder {
             result = JSON.parse(bs58.decode(after).toString('utf8'))
                     .map(el => el.$date ? new Date(el.$date) : el);
 
-            if (!Array.isArray(result)) {
-                throw new Error();
-            }
-
             if (result.length !== this.fields.length) {
                 throw new Error();
             }
@@ -118,5 +114,5 @@ module.exports = class PageableCollectionOrder {
 }
 
 function compareQuery(name, dir, value) {
-    return { [name]: { [`$${dir > 1 ? 'l' : 'g'}t`]: value } };
+    return { [name]: { [`$${dir > 0 ? 'g' : 'l'}t`]: value } };
 }

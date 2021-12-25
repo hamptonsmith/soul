@@ -26,7 +26,8 @@ module.exports = (...args) => async t => {
 
     const nower = fakeNower();
 
-    const dbClient = await MongoClient.connect(config.mongodb.uri);
+    const mongoClient = await MongoClient.connect(config.mongodb.uri);
+    const dbClient = mongoClient.db(config.mongodb.dbName);
 
     let server;
     try {
@@ -67,8 +68,8 @@ module.exports = (...args) => async t => {
             await server.close();
         }
 
-        await dbClient.db(config.mongodb.dbName).dropDatabase();
-        await dbClient.close();
+        await mongoClient.db(config.mongodb.dbName).dropDatabase();
+        await mongoClient.close();
     }
 };
 
