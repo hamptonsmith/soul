@@ -1,7 +1,10 @@
 'use strict';
 
 const axios = require('axios');
+const buildInterceptableMongo = require('./utils/interceptable-mongo');
 const CSON = require('cson-parser');
+const FakeErrorReporter = require('./fakes/fake-error-reporter');
+const fakeScheduler = require('./fakes/fake-scheduler');
 const http = require('http');
 const ms = require('ms');
 const soul = require('../app');
@@ -26,23 +29,35 @@ module.exports = (...args) => async t => {
 
     const nower = fakeNower();
 
-    const mongoClient = await MongoClient.connect(config.mongodb.uri);
-    const dbClient = mongoClient.db(config.mongodb.dbName);
+    // This is a client for the service to use and close. We'll make our own
+    // later for testing business.
+    const iMongo = buildInterceptableMongo();
+    const iDbClient = (await iMongo.MongoClient.connect(config.mongodb.uri))
+            .db(config.mongodb.dbName);
+
+    iDbClient.addInterceptor = iMongo.addInterceptor.bind(iMongo);
 
     let server;
     try {
+        const runtimeDeps = {
+            errorReporter: new FakeErrorReporter(t.log),
+            log: t.log,
+            mongoConnect: uri => iMongo.MongoClient.connect(uri),
+            nower,
+            schedule: fakeScheduler()
+        }
+
         server = await soul(
-            [`data:text/plain,${CSON.stringify(config)}`],
-            { log: t.log, nower }
-        );
+                [`data:text/plain,${CSON.stringify(config)}`], runtimeDeps);
 
         await fn(t, {
             baseHref: server.url,
             config,
-            dbClient,
+            dbClient: iDbClient,
             doBestEffort: async (name, pr) => await pr,
-            nower,
-            soul: axios.create({ baseURL: server.url })
+            soul: axios.create({ baseURL: server.url }),
+
+            ...runtimeDeps
         });
     }
     catch (e) {
@@ -68,8 +83,11 @@ module.exports = (...args) => async t => {
             await server.close();
         }
 
-        await mongoClient.db(config.mongodb.dbName).dropDatabase();
-        await mongoClient.close();
+        const testingMongoClient =
+                await MongoClient.connect(config.mongodb.uri);
+
+        await testingMongoClient.db(config.mongodb.dbName).dropDatabase();
+        await testingMongoClient.close();
     }
 };
 

@@ -52,6 +52,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
         errorReporter: new ConsoleErrorReporter(runtimeOpts.log || ctx.state.log),
         fs: fsLib,
         log: console.log,
+        mongoConnect: MongoClient.connect,
         nower: Date.now,
         schedule: (ms, fn) => setTimeout(fn, ms),
 
@@ -66,7 +67,8 @@ module.exports = async (argv, runtimeOpts = {}) => {
 
     const serverConfig = await loadConfig(argv[0]);
 
-    const mongoClient = await MongoClient.connect(serverConfig.mongodb.uri);
+    const mongoClient =
+            await runtimeOpts.mongoConnect(serverConfig.mongodb.uri);
     const dbClient = mongoClient.db(serverConfig.mongodb.dbName);
 
     const serviceConfigDoc = await readyService(

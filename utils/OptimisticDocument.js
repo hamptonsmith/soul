@@ -2,15 +2,15 @@
 
 const clone = require('clone');
 const errors = require('../standard-errors');
-const EventEmitter = require('events');
 const deepequal = require('deepequal');
+const EventEmitter = require('events');
 
 class OptimisticDocument extends EventEmitter {
     constructor(collection, documentId, documentContainer, runtimeDeps) {
         super();
 
         this.collection = collection;
-        this.documentName = documentId;
+        this.documentId = documentId;
         this.documentContainer = documentContainer;
         this.runtimeDeps = runtimeDeps;
 
@@ -28,9 +28,11 @@ class OptimisticDocument extends EventEmitter {
     }
 
     async update(updateFn, onConflictFn = defaultOnConflictFn) {
-        let retry = true;
 
+        let retry = true;
+        let lastError;
         let tries = 0;
+
         while (retry && !this.closed) {
             const currentVersion =
                     (await this.collection.findOne({ _id: this.documentId }))
@@ -42,45 +44,47 @@ class OptimisticDocument extends EventEmitter {
             }
 
             const oldData = clone(currentVersion.data);
-            let nextData = await updateFn(currentVersion.data)
-                    || currentVersion.data;
+            let nextData = clone(currentVersion.data);
 
-            if (!deepequal(nextData, oldData)) {
-                nextData = currentVersion.data;
-            }
+            nextData = await updateFn(nextData) || nextData;
 
-            if (nextData !== undefined && !this.closed) {
+            if (!deepequal(oldData, nextData) && !this.closed) {
                 try {
-                    await this.collection.replaceOne({
+                    await this.collection.replaceOne(
+                            {
+                                _id: this.documentId,
+                                version: currentVersion.version
+                            },
+                            {
+                                data: nextData,
+                                version: currentVersion.version + 1
+                            },
+                            { upsert: true });
+
+                    this.documentContainer.setData({
                         _id: this.documentId,
-                        version: currentVersion.version
-                    },
-                    {
                         version: currentVersion.version + 1,
                         data: nextData
                     });
 
-                    if (currentVersion.version
-                            !== this.documentContainer.getData().version) {
-                        this.documentContainer.setData({
-                            _id: this.documentId,
-                            version: currentVersion.version + 1,
-                            data: nextData
-                        });
-                    }
-
                     retry = false;
+                    lastError = null;
                 }
                 catch (e) {
-                    if (e.code !== 'E11000') {
+                    if (e.code !== 11000) {
                         throw errors.unexpectedError(e);
                     }
 
+                    lastError = e;
                     tries++;
                     retry = await onConflictFn(
-                            currentVersion.data, tries, runtimeDeps);
+                            currentVersion.data, tries, this.runtimeDeps);
                 }
             }
+        }
+
+        if (lastError) {
+            throw errors.unexpectedError(lastError);
         }
     }
 };
@@ -110,7 +114,7 @@ module.exports = async (collection, documentId,
 
         setData(d) {
             this.data = d;
-            this.emit('documentChanged', this.data);
+            this.emit('documentChanged', this.data.data);
         }
     };
 
@@ -129,26 +133,24 @@ module.exports = async (collection, documentId,
         if (!doc.closed) {
             try {
                 const currentVersion =
-                        (await this.collection.findOne({
-                            _id: this.documentId
+                        (await collection.findOne({
+                            _id: documentId
                         }))
-                        || this.documentContainer.getData();
+                        || localDoc.getData();
 
                 if (currentVersion.version !== localDoc.getData().version) {
                     localDoc.setData(currentVersion);
                 }
             }
             catch (e) {
-                if (e.code !== 'E11000') {
-                    runtimeDeps.errorReporter.warning(e);
-                }
+                runtimeDeps.errorReporter.warning(e);
             }
 
             runtimeDeps.schedule(pollInterval(), pollValue);
         }
     }
 
-    runtimeDeps.schedule(pollInterval(), pollValue);
+    await pollValue();
 
     return doc;
 };

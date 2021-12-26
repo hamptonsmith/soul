@@ -1,6 +1,8 @@
 'use strict';
 
-module.exports = class ConsoleErrorReporter {
+module.exports = class FakeErrorReporter {
+    reports = {};
+
     constructor(log) {
         this.log = log;
     }
@@ -77,5 +79,12 @@ module.exports = class ConsoleErrorReporter {
         for (const line of output.split('\n')) {
             this.log(line);
         }
+
+        const lcSeverity = severity.toLowerCase();
+        if (!this.reports[lcSeverity]) {
+            this.reports[lcSeverity] = [];
+        }
+
+        this.reports[lcSeverity].push({ details, error, message });
     }
 };

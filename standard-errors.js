@@ -44,6 +44,6 @@ module.exports = {
         static messageTemplate = 'Unexpected error: {{{message}}}';
     },
     unexpectedError(e) {
-        return new this.UnexpectedError({ message: e.message}, e);
+        return new this.UnexpectedError({ message: e.message }, e);
     }
 }
