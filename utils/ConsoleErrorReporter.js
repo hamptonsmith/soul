@@ -38,7 +38,7 @@ module.exports = class ConsoleErrorReporter {
             if (arg instanceof Error) {
                 error = arg;
             }
-            else if (arg instanceof String) {
+            else if (typeof arg === 'string') {
                 message = arg;
             }
             else {

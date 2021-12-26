@@ -2,6 +2,7 @@
 
 const axios = require('axios');
 const buildInterceptableMongo = require('./utils/interceptable-mongo');
+const buildFakeLogger = require('./fakes/fake-logger');
 const CSON = require('cson-parser');
 const FakeErrorReporter = require('./fakes/fake-error-reporter');
 const fakeScheduler = require('./fakes/fake-scheduler');
@@ -30,7 +31,7 @@ module.exports = (...args) => async t => {
     const nower = fakeNower();
 
     // This is a client for the service to use and close. We'll make our own
-    // later for testing business.
+    // later for test framework business.
     const iMongo = buildInterceptableMongo();
     const iDbClient = (await iMongo.MongoClient.connect(config.mongodb.uri))
             .db(config.mongodb.dbName);
@@ -41,7 +42,7 @@ module.exports = (...args) => async t => {
     try {
         const runtimeDeps = {
             errorReporter: new FakeErrorReporter(t.log),
-            log: t.log,
+            log: buildFakeLogger(t.log),
             mongoConnect: uri => iMongo.MongoClient.connect(uri),
             nower,
             schedule: fakeScheduler()
