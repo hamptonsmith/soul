@@ -106,3 +106,29 @@ test('realm pagination by `continueToken`', hermeticTest(
 
     t.deepEqual(actualFriendlyNames, expectedFriendlyNames);
 }));
+
+test('GET /realm/:realmId', hermeticTest(
+        async (t, { baseHref, soul, nower }) => {
+
+    const postResult = await soul.post('/realms');
+    const getResult = await soul.get(`/realms/${postResult.data.id}`);
+
+    t.is(getResult.status, 200);
+    t.deepEqual(getResult.data, {
+        id: postResult.data.id,
+        friendlyName: '',
+        createdAt: new Date(nower()).toISOString(),
+        updatedAt: new Date(nower()).toISOString(),
+        userSpecifierSet: [],
+        href: `${baseHref}/realms/${postResult.data.id}`
+    });
+}));
+
+test('GET /realm/:realmId - no such realm', hermeticTest(
+        async (t, { baseHref, soul, nower }) => {
+
+    const error = await t.throwsAsync(soul.get('/realms/rlm_nosuchrealm'));
+
+    t.is(error.response.status, 404);
+    t.is(error.response.data.code, 'NO_SUCH_REALM');
+}));

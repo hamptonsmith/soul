@@ -25,6 +25,18 @@ module.exports = {
             };
         }
     },
+    'GET /realms/:realmId': {
+        handler: async (ctx, next) => {
+            const realm =
+                    await ctx.services.realms.fetchById(ctx.params.realmId);
+
+            ctx.status = 200;
+            ctx.body = {
+                href: `${ctx.state.baseHref}/realms/${realm.id}`,
+                ...realm
+            };
+        }
+    },
     'POST /realms': {
         validator: {
             body: {

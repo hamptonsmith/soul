@@ -38,6 +38,7 @@ class UnexpectedError extends SbError {
 }
 
 const publicErrors = {
+    NO_SUCH_REALM: 404,
     VALIDATION_ERROR: 500
 };
 

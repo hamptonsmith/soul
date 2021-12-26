@@ -17,11 +17,7 @@ module.exports = class RealmsService {
                 'createdAt',
                 this.dbClient.collection('Realms'),
                 [['createdAt', 1]],
-                d => {
-                    d.id = d._id;
-                    delete d._id;
-                    return d;
-                });
+                fromMongoDoc);
     }
 
     async create(friendlyName, userSpecifierSet) {
@@ -59,12 +55,23 @@ module.exports = class RealmsService {
     async fetchById(id) {
         await validate(id, check => check.soulId(RealmsService.idPrefix));
 
-        const result = this.dbClient.collection('Realms').findOne({ _id: id });
+        const result =
+                await this.dbClient.collection('Realms').findOne({ _id: id });
 
         if (!result) {
             throw errors.noSuchRealm(id);
         }
 
-        return result;
+        return fromMongoDoc(result);
     }
 };
+
+function fromMongoDoc(d) {
+    return {
+        createdAt: d.createdAt,
+        friendlyName: d.friendlyName,
+        id: d._id,
+        updatedAt: d.updatedAt,
+        userSpecifierSet: d.userSpecifierSet
+    };
+}
