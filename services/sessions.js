@@ -8,7 +8,6 @@ const ms = require('ms');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const RealmsService = require('./realms');
 const SbError = require('@shieldsbetter/sberror2');
-const UsersService = require('./users');
 const validate = require('../utils/soul-validate');
 
 const { DateTime } = require('luxon');
@@ -16,10 +15,13 @@ const { DateTime } = require('luxon');
 module.exports = class SessionsService {
     static idPrefix = 'sid';
 
-    constructor(dbClient, realmsService, { doBestEffort, nower }) {
+    constructor(dbClient, jsonataService, realmsService,
+            { doBestEffort, nower }) {
+
         this.doBestEffort = doBestEffort;
         this.mongoCollection = dbClient.collection('Sessions');
         this.nower = nower;
+        this.jsonata = jsonataService;
         this.realms = realmsService;
 
         this.byCreationTime = new PageableCollectionOrder(
@@ -34,18 +36,28 @@ module.exports = class SessionsService {
                 });
     }
 
-    async create(
-            realmId, /* nullable */ agentFingerprint, /* nullable */ userId,
-            config) {
-        await validate({ realmId, agentFingerprint, userId }, check => ({
+    async create(realmId, securityContextName, /* nullable */ idTokenClaims,
+            /* nullable */ agentFingerprint, /* nullable */ subjectId, config) {
+        await validate({
+            realmId,
+            securityContextName,
+            agentFingerprint,
+            subjectId
+        }, check => ({
             realmId: check.soulId(RealmsService.idPrefix),
-            agentFingerprint: check.agentFingerprint(),
-            userId: check.soulId(UsersService.idPrefix)
+            securityContextName: check.string({ regexp: /^\w{1,50}$/ }),
+            agentFingerprint: check.optional(check.agentFingerprint()),
+            subjectId: check.optional(
+                    check.string({ minLength: 1, maxLength: 200 }))
         }));
 
-        const realm = this.realms.fetchById(realmId);
+        const realm = await this.realms.fetchById(realmId);
 
-        const governingPeriodLength = ms(realm.governingPeriodLength
+        const securityContextDefinition = await getSatisfiableSecurityContext(
+                this, realm, securityContextName, idTokenClaims || {});
+
+        const governingPeriodLength = ms(
+                realm.governingPeriodLength
                 || config.defaultSessionGoverningPeriodLength);
 
         const id = generateId(SessionsService.idPrefix);
@@ -61,16 +73,26 @@ module.exports = class SessionsService {
             currentEraNumber: 0,
             governingPeriodLength,
             id: id,
+            idTokenClaims,
+            inactivityExpirationDuration:
+                    securityContextDefinition.inactivityExpirationDuration,
             lastUsedAt: now,
             realmId,
-            userId
+            securityContext: securityContextDefinition.id,
+            subjectId
         };
+
+        if (securityContextDefinition.absoluteExpirationDuration) {
+            session.expiresAt = new Date(now.valueOf()
+                    + securityContextDefinition.absoluteExpirationDuration);
+        }
 
         await this.mongoCollection.insertOne(toMongoDoc(session));
 
         return {
             eraCredentials: {
                 eraNumber: 0,
+                securityContext: session.securityContext,
                 tokenId: tokenId
             },
 
@@ -89,13 +111,28 @@ module.exports = class SessionsService {
                 });
     }
 
-    async validateSessionCredentials(
-            realmId, sessionId, credentials, agentFingerprint, config) {
-        await validate({ realmId, sessionId, agentFingerprint }, check => ({
+    async validateSessionCredentials(realmId, expectedSecurityContext,
+            sessionId, credentials, agentFingerprint, config) {
+        await validate({
+            realmId,
+            expectedSecurityContext,
+            sessionId,
+            agentFingerprint
+        }, check => ({
             realmId: check.soulId(RealmsService.idPrefix),
+            expectedSecurityContext:
+                    check.string({ regexp: /^\w{1,50}:\d{1,7}$/ }),
             sessionId: check.soulId(SessionsService.idPrefix),
-            agentFingerprint: check.agentFingerprint()
+            agentFingerprint: check.optional(check.agentFingerprint())
         }));
+
+        if (credentials.every(
+                c => c.securityContext !== expectedSecurityContext)) {
+            throw errors.invalidCredentials({
+                reason: 'incorrect security context. Wanted: '
+                        + expectedSecurityContext
+            });
+        }
 
         const latestEraRepresented = credentials.reduce(
                 (accum, { eraNumber }) => eraNumber > accum ? eraNumber : accum,
@@ -132,6 +169,13 @@ module.exports = class SessionsService {
         }
 
         const now = DateTime.fromJSDate(new Date(this.nower()));
+
+        if (session.expiresAt && now > DateTime.fromJSDate(session.expiresAt)) {
+            throw errors.invalidCredentials({
+                reason: 'session expired',
+                relog: true
+            });
+        }
 
         const expirationPeriodMs = ms(
                 session.inactivityExpirationDuration
@@ -237,6 +281,7 @@ module.exports = class SessionsService {
                 const nextEraTokenId = crypto.randomBytes(32);
                 nextEraCredentials = {
                     index: session.currentEraNumber + 1,
+                    securityContext: session.securityContext,
                     tokenId: nextEraTokenId
                 };
             }
@@ -274,7 +319,7 @@ module.exports = class SessionsService {
             ...session,
 
             nextEraCredentials,
-            retiredCredentials
+            retireCredentials: retiredCredentials
         };
     }
 };
@@ -304,7 +349,7 @@ async function advanceEra(
         await sessions.mongoCollection.updateOne(where, update);
     }
     catch (e) {
-        if (e.code !== 'E11001') {
+        if (e.code !== 11001) {
             throw errors.unexpectedError(e);
         }
 
@@ -351,6 +396,7 @@ async function findWithMatchingFingerprintOrInvalidate(
 
 function fromMongoDoc(d) {
     return {
+        absoluteExpirationDuration: d.absoluteExpirationDuration,
         acceptedCurrentEraTokenIds: d.acceptedCurrentEraTokenIds,
         acceptedPreviousEraTokenIds: d.acceptedPreviousEraTokenIds,
         agentFingerprint: d.agentFingerprint,
@@ -360,8 +406,33 @@ function fromMongoDoc(d) {
         governingPeriodLength: d.governingPeriodLength,
         lastUsedAt: d.lastUsedAt,
         id: d._id,
+        inactivityExpirationDuration: d.inactivityExpirationDuration,
         realmId: d.realmId,
-        userId: d.userId
+        securityContext: d.securityContext,
+        subjectId: d.subjectId
+    };
+}
+
+async function getSatisfiableSecurityContext(
+        sessions, realm, securityContext, idTokenClaims) {
+    const specifiedContext = (realm.securityContexts || {})[securityContext];
+
+    if (!specifiedContext) {
+        throw errors.invalidCredentials({
+            reason: `no such security context: ${securityContext}`
+        });
+    }
+
+    if (!sessions.jsonata.evaluate(
+            specifiedContext.precondition, { claims: idTokenClaims })) {
+        throw errors.invalidCredentials({
+            reason: `security context "${securityContext}" precondition not met`
+        });
+    }
+
+    return {
+        id: `${securityContext}:${specifiedContext.versionNumber}`,
+        ...specifiedContext.sessionOptions
     };
 }
 
@@ -380,6 +451,7 @@ function sign(text, secret) {
 function toMongoDoc(o) {
     return {
         _id: o.id,
+        absoluteExpirationDuration: o.absoluteExpirationDuration,
         acceptedCurrentEraTokenIds: o.acceptedCurrentEraTokenIds,
         acceptedPreviousEraTokenIds: o.acceptedPreviousEraTokenIds,
         agentFingerprint: o.agentFingerprint,
@@ -387,8 +459,10 @@ function toMongoDoc(o) {
         currentEraStartedAt: o.currentEraStartedAt,
         currentEraNumber: o.currentEraNumber,
         governingPeriodLength: o.governingPeriodLength,
+        inactivityExpirationDuration: o.inactivityExpirationDuration,
         lastUsedAt: o.lastUsedAt,
         realmId: o.realmId,
-        userId: o.userId
+        securityContext: o.securityContext,
+        subjectId: o.subjectId
     };
 }

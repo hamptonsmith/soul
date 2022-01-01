@@ -11,6 +11,8 @@ const deepequal = require('deepequal');
 const defaultServiceConfig = require('./default-service-config');
 const fsLib = require('fs');
 const http = require('http');
+const JsonataService = require('./services/jsonata');
+const JwtsService = require('./services/jwts');
 const Koa = require('koa');
 const lodash = require('lodash');
 const Mustache = require('mustache');
@@ -23,7 +25,6 @@ const sessionsRoutes = require('./http/sessions');
 const SessionsService = require('./services/sessions');
 const slurpUri = require('@shieldsbetter/slurp-uri');
 const standardEndpoints = require('./utils/standard-endpoints');
-const UsersService = require('./services/users');
 const util = require('util');
 const validate = require('./utils/validator');
 
@@ -50,7 +51,8 @@ module.exports = async (argv, runtimeOpts = {}) => {
                     'Error during best effort action: ' + name, e)
             });
         },
-        errorReporter: new ConsoleErrorReporter(runtimeOpts.log || ctx.state.log),
+        errorReporter:
+                new ConsoleErrorReporter(runtimeOpts.log || ctx.state.log),
         fs: fsLib,
         log: console.log,
         mongoConnect: MongoClient.connect,
@@ -68,8 +70,8 @@ module.exports = async (argv, runtimeOpts = {}) => {
 
     const serverConfig = await loadConfig(argv[0]);
 
-    const mongoClient =
-            await runtimeOpts.mongoConnect(serverConfig.mongodb.uri);
+    const mongoClient = await runtimeOpts.mongoConnect(
+            serverConfig.mongodb.uri, { ignoreUndefined: true });
     const dbClient = mongoClient.db(serverConfig.mongodb.dbName);
 
     const serviceConfigDoc = await readyService(
@@ -89,16 +91,19 @@ module.exports = async (argv, runtimeOpts = {}) => {
         };
     });
 
+    const jsonata = new JsonataService(runtimeOpts);
+    const jwts = new JwtsService(config, runtimeOpts);
     const realms = new RealmsService(dbClient, runtimeOpts);
 
-    const sessions = new SessionsService(dbClient, realms, runtimeOpts);
-    const users = new UsersService(dbClient, realms, runtimeOpts);
+    const sessions =
+            new SessionsService(dbClient, jsonata, realms, runtimeOpts);
 
     const services = {
         dbClient,
+        jsonata,
+        jwts,
         realms,
-        sessions,
-        users
+        sessions
     };
 
     const app = new Koa();
@@ -193,9 +198,9 @@ module.exports = async (argv, runtimeOpts = {}) => {
         };
     });
 
-    standardEndpoints(router, accessAttemptsRoutes);
-    standardEndpoints(router, realmsRoutes);
-    standardEndpoints(router, sessionsRoutes);
+    await standardEndpoints(router, accessAttemptsRoutes);
+    await standardEndpoints(router, realmsRoutes);
+    await standardEndpoints(router, sessionsRoutes);
 
     app
         .use(router.routes())

@@ -9,6 +9,7 @@ module.exports = {
     encode: (sessionId, eraCredentials, config) => {
         const tokenData = Buffer.from(JSON.stringify({
             eraNumber: eraCredentials.eraNumber,
+            securityContext: eraCredentials.securityContext,
             sessionId: sessionId,
             tokenId: eraCredentials.tokenId
         }), 'utf8');

@@ -10,8 +10,8 @@ module.exports = () => {
             interceptors.push({ action, test });
         },
         MongoClient: {
-            connect: async uri => {
-                const realClient = await MongoClient.connect(uri);
+            connect: async (uri, opts) => {
+                const realClient = await MongoClient.connect(uri, opts);
 
                 return {
                     db(dbName) {

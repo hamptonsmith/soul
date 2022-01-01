@@ -1,5 +1,6 @@
 'use strict';
 
+const jsonpointer = require('jsonpointer');
 const lodash = require('lodash');
 const util = require('util');
 
@@ -23,7 +24,11 @@ class ValidationContext {
         unknownFieldSchemas: []
     };
 
-    constructor(checkerTemplate, hierarchyGlobalSchemas = []) {
+    constructor(checkerTemplate, {
+        hierarchyGlobalSchemas = [],
+        validationWhitelist
+    } = {}) {
+        this.whitelist = validationWhitelist;
         this.checker = {};
 
         for (const [methodName, method] of Object.entries(checkerTemplate)) {
@@ -80,11 +85,11 @@ class ValidationContext {
     }
 }
 
-module.exports = async (value, schema, checkerExtensions) => {
+module.exports = async (value, schema, checkerExtensions, options = {}) => {
     const ctx = new ValidationContext({
         ...defaultChecker,
         ...checkerExtensions
-    });
+    }, options);
 
     await validate(value, schema, ctx);
 };
@@ -92,6 +97,15 @@ module.exports = async (value, schema, checkerExtensions) => {
 module.exports.ValidationError = ValidationError;
 
 async function validate(value, schemas, ctx) {
+    if (ctx.whitelist) {
+        const pathPtr = jsonpointer.compile(ctx.stack.map(f => f.key)) + '/';
+
+        if (ctx.whitelist.every(
+                whitelisted => !`${whitelisted}/`.startsWith(pathPtr))) {
+            return;
+        }
+    }
+
     if (!Array.isArray(schemas)) {
         schemas = [schemas];
     }
@@ -182,7 +196,17 @@ async function validate(value, schemas, ctx) {
 
         ctx.push(f);
         ctx.checker.unknown = true;
-        await validate(value[f], valueSchemas, ctx);
+        try {
+            await validate(value[f], valueSchemas, ctx);
+        }
+        catch (e) {
+            if (e instanceof ValidationError) {
+                e.path.unshift(f);
+            }
+
+            throw e;
+        }
+
         delete ctx.checker.unknown;
         ctx.pop();
     }
@@ -313,8 +337,27 @@ var defaultChecker = {
             }
         };
     },
-    switch(distinguisher, alternatives = {}, onNoMatch) {
+    switch(...args) {
+        let precondition, distinguisher, alternatives, onNoMatch;
+
+        if (typeof args[1] === 'function') {
+            precondition = args[0];
+            distinguisher = args[1];
+            alternatives = args[2];
+            onNoMatch = args[3];
+        }
+        else {
+            distinguisher = args[0];
+            alternatives = args[1];
+            onNoMatch = args[2];
+        }
+
         return async (check, actual) => {
+            if (precondition) {
+                // Inefficient, but we must.
+                await validate(actual, precondition, check._ctx);
+            }
+
             const key = await distinguisher(actual);
 
             if (alternatives[key]) {

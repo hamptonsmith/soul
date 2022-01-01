@@ -3,13 +3,6 @@
 const SbError = require('@shieldsbetter/sberror2');
 
 module.exports = {
-    DuplicateUser: class extends SbError {
-        static messageTemplate = 'A user with one of those user specifiers '
-                + 'already exists.';
-    },
-    duplicateUser() {
-        return new this.DuplicateUser();
-    },
     InvalidCredentials: class extends SbError {
         static messageTemplate = 'Invalid credentials.';
     },
@@ -34,11 +27,19 @@ module.exports = {
     noSuchSession(sessionId) {
         return new this.NoSuchSession({ sessionId });
     },
-    NoSuchUser: class extends SbError {
-        static messageTemplate = 'No such user: {{description}}';
+    NotAuthenticated: class extends SbError {
+        static messageTemplate =
+                'Could not establish client identity: {{reason}}';
     },
-    noSuchUser(description) {
-        return new this.NoSuchUser({ description });
+    notAuthenticated(reason, ...more) {
+        return new this.NotAuthenticated({ reason }, ...more);
+    },
+    trackingError(cause) {
+        const e = new Error(cause.message);
+        e.details = cause.details;
+        e.code = cause.code;
+
+        throw e;
     },
     UnexpectedError: class extends SbError {
         static messageTemplate = 'Unexpected error: {{{message}}}';

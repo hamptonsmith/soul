@@ -4,14 +4,9 @@ const assert = require('assert');
 const bodyParser = require('koa-bodyparser');
 const bs58 = require('bs58');
 const errors = require('../standard-errors');
+const httpUtils = require('./http-utils');
 const tokens = require('../utils/tokens');
 const SbError = require('@shieldsbetter/sberror2')
-
-const { remapValidationErrorPaths } = require('./http-utils');
-
-class UnableToCreateUser extends SbError {
-    static messageTemplate = 'Unable to create user. {{additionalInfo}}';
-}
 
 class UnknownMechanism extends SbError {
     static messageTemplate = 'Unknown POST /session mechanism: {{{got}}}. '
@@ -45,7 +40,7 @@ module.exports = {
                     const sessionId = Object.keys(decodedTokens)[0];
                     const { tokens: credentialList } = decodedTokens[sessionId];
 
-                    const session = await remapValidationErrorPaths({
+                    const session = await httpUtils.remapValidationErrorPaths({
                         '/realmId': '/path/realmId',
                         '/sessionId': '/querystring/sessionToken',
                         '/agentFingerprint': '/querystring/agentFingerprint'
@@ -60,7 +55,7 @@ module.exports = {
                 }
             }
             else {
-                ({ after, docs } = await remapValidationErrorPaths({
+                ({ after, docs } = await httpUtils.remapValidationErrorPaths({
                     '/after': '/querystring/after',
                     '/limit': '/querystring/limit'
                 }, () => ctx.services.realms.byCreationTime.find(
@@ -88,42 +83,36 @@ module.exports = {
                     lastUsedAt: d.lastUsedAt,
                     id: d.id,
                     realmId: d.realmId,
-                    userId: d.userId
+                    subjectId: d.subjectId
                 }))
             };
         }
     },
     'POST /realms/:realmId/sessions': {
-        validator: {
-            body: [
+        validator: check => ({
+            body: check.switch(
+                { mechanism: check.string() },
+                actual => actual.mechanism.trim().toLowerCase(),
                 {
-                    agentFingerprint: check => check.optional(check.string({
-                        minLength: 1,
-                        maxLength: 500
-                    }))
-                },
-                check => check.switch(
-                    actual => actual.mechanism.trim().toLowerCase(),
-                    {
-                        dev: {
-                            existingUserOk:
-                                    check => check.optional(check.boolean()),
-                            newUserOk: check => check.optional(check.boolean()),
-                            userId: check => check.string({
-                                regexp: /^usr_[a-zA-Z0-9]{1,100}$/
-                            })
-                        },
-                        token: {
-                            sessionTokens: check => check.array({
-                                elements: check.sessionToken()
-                            })
+                    dev: {
+                        jwtPayload: {
+                            iat: check.number(),
+                            iss: check.string({
+                                    minLength: 1, maxLength: 100}),
+                            sub: check.string({
+                                    minLength: 1, maxLength: 100}),
                         }
                     },
-                    (check, actual) => check.invalid(
-                        'No such mechanism: ' + actual.mechanism,
-                        actual.mechanism))
-            ]
-        },
+                    idToken: {
+                        token: check.string({
+                            regexp: /^[a-zA-Z0-9_\-\.]{1,5000}$/
+                        })
+                    }
+                },
+                (check, actual) => check.invalid(
+                    'No such mechanism: ' + actual.mechanism,
+                    actual.mechanism))
+        }),
         handler: async (ctx, next) => {
             await sessionMechanisms[ctx.request.body.mechanism](ctx);
         }
@@ -132,67 +121,55 @@ module.exports = {
 
 var sessionMechanisms = {
     dev: async ctx => {
-        let userId;
-
-        // Try to make the user if requested...
-        if (ctx.request.body.newUserOk) {
-            try {
-                userId = await remapValidationErrorPaths({
+        const { status, body } = await jwtPayloadToSessionResult(
+                ctx.request.body.jwtPayload, ctx, {
                     '/realmId': '/path/realmId',
-                    '/metadata': '/body/metadata',
-                    '/userId': '/body/userId'
-                }, () => ctx.services.users.create(
-                        ctx.params.realmId, ctx.request.body.metadata,
-                        { id: ctx.params.userId }));
-            }
-            catch (e) {
-                if (e.code !== 'DUPLICATE_USER') {
-                    throw errors.unexpectedError(e);
-                }
-            }
-        }
+                    '/securityContextName': '/body/securityContext',
+                    '/agentFingerprint': '/body/agentFingerprint',
+                    '/subjectId': '/body/jwtPayload'
+                });
 
-        // Try to find the existing user if requested...
-        if (!userId && ctx.request.body.existingUserOk) {
-            const user = await ctx.services.users.fetchById(
-                    ctx.params.realmId, ctx.request.body.userId);
-
-            if (!user) {
-                throw errors.duplicateUser();
-            }
-
-            userId = user.id;
-        }
-
-        const session = await remapValidationErrorPaths({
-            '/realmId': '/path/realmId',
-            '/agentFingerprint': '/body/agentFingerprint',
-            '/userId': '/body/userId'
-        }, () => ctx.services.sessions.create(
-                ctx.params.realmId,
-                ctx.request.body.agentFingerprint,
-                ctx.request.body.userId,
-                ctx.state.config));
-
-        const sessionToken = tokens.encode(
-                session.id, session.eraCredentials, ctx.state.config);
-
-        ctx.status = 201;
-        ctx.body = {
-            createdAt: session.createdAt,
-            currentEraStartedAt: session.currentEraStartedAt,
-            currentEraNumber: session.currentEraNumber,
-            href: `${ctx.state.baseHref}`
-                    + `/realms/${ctx.params.realmId}`
-                    + `/sessions/${session.id}`,
-            id: session.id,
-            lastUsedAt: session.lastUsedAt,
-            realmId: session.realmId,
-            sessionTokens: [sessionToken],
-            userId: session.userId
-        };
+        ctx.status = status;
+        ctx.body = body;
     },
-    token: async ctx => {
-        throw new Error();
+    idToken: async ctx => {
+        const jwtPayload =
+                await ctx.services.jwt.validate(ctx.request.body.token);
+
+        const { status, body } = await jwtPayloadToSessionResult(
+                jwtPayload, ctx, {
+                    '/realmId': '/path/realmId',
+                    '/securityContextName': '/body/securityContext',
+                    '/agentFingerprint': '/body/agentFingerprint',
+                    '/subjectId': '/body/token'
+                });
+
+        ctx.status = status;
+        ctx.body = body;
     }
 };
+
+async function jwtPayloadToSessionResult(jwtPayload, ctx, errorPathMapping) {
+    const session = await httpUtils.remapValidationErrorPaths(errorPathMapping,
+            () => ctx.services.sessions.create(
+                    ctx.params.realmId,
+                    ctx.request.body.securityContext,
+                    jwtPayload,
+                    ctx.request.body.agentFingerprint,
+                    JSON.stringify([jwtPayload.iss, jwtPayload.sub]),
+                    ctx.state.config));
+
+    const token =
+            tokens.encode(session.id, session.eraCredentials, ctx.state.config);
+    const body = {
+        addTokens: [ token ],
+        retireTokens: []
+    };
+
+    httpUtils.copySessionFields(session, body, ctx);
+
+    return {
+        status: 201,
+        body
+    };
+}

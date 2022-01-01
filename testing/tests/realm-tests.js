@@ -17,30 +17,44 @@ test('create default realm', hermeticTest(
 
     const postResult = await soul.post('/realms');
 
-    t.is(postResult.status, 201);
-    t.deepEqual(postResult.data, {
+    const realmData = {
         id: postResult.data.id,
         friendlyName: '',
         createdAt: new Date(nower()).toISOString(),
-        updatedAt: new Date(nower()).toISOString(),
-        userSpecifierSet: [],
-        href: `${baseHref}/realms/${postResult.data.id}`
-    });
+        href: `${baseHref}/realms/${postResult.data.id}`,
+        securityContexts: {
+            anonymous: {
+                precondition: 'true',
+                sessionOptions: {},
+                versionNumber: 0
+            },
+            authenticated: {
+                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                sessionOptions: {
+                    inactivityExpirationDuration: '90d'
+                },
+                versionNumber: 0
+            },
+            secure: {
+                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                sessionOptions: {
+                    absoluteExpirationDuration: '6h',
+                    inactivityExpirationDuration: '30m'
+                },
+                versionNumber: 0
+            }
+        },
+        updatedAt: new Date(nower()).toISOString()
+    };
+
+    t.is(postResult.status, 201);
+    t.deepEqual(postResult.data, realmData);
 
     const getResult = await soul.get('/realms');
 
     t.is(getResult.status, 200);
     t.deepEqual(getResult.data, {
-        resources: [
-            {
-                id: postResult.data.id,
-                friendlyName: '',
-                createdAt: new Date(nower()).toISOString(),
-                updatedAt: new Date(nower()).toISOString(),
-                userSpecifierSet: [],
-                href: `${baseHref}/realms/${postResult.data.id}`
-            }
-        ]
+        resources: [ realmData ]
     });
 }));
 
@@ -49,7 +63,15 @@ test('create non-default realm', hermeticTest(
 
     const postResult = await soul.post('/realms', {
         friendlyName: 'Some realm',
-        userSpecifierSet: ['foo', 'bar']
+        securityContexts: {
+            foo: {
+                precondition: 'foo.bar.bazz',
+                sessionOptions: {
+                    absoluteExpirationDuration: '1ms',
+                    inactivityExpirationDuration: '2ms'
+                }
+            }
+        }
     });
 
     t.is(postResult.status, 201);
@@ -57,9 +79,18 @@ test('create non-default realm', hermeticTest(
         id: postResult.data.id,
         friendlyName: 'Some realm',
         createdAt: new Date(nower()).toISOString(),
-        updatedAt: new Date(nower()).toISOString(),
-        userSpecifierSet: ['foo', 'bar'],
-        href: `${baseHref}/realms/${postResult.data.id}`
+        href: `${baseHref}/realms/${postResult.data.id}`,
+        securityContexts: {
+            foo: {
+                precondition: 'foo.bar.bazz',
+                sessionOptions: {
+                    absoluteExpirationDuration: '1ms',
+                    inactivityExpirationDuration: '2ms'
+                },
+                versionNumber: 0
+            }
+        },
+        updatedAt: new Date(nower()).toISOString()
     });
 
     const getResult = await soul.get('/realms');
@@ -71,9 +102,18 @@ test('create non-default realm', hermeticTest(
                 id: postResult.data.id,
                 friendlyName: 'Some realm',
                 createdAt: new Date(nower()).toISOString(),
-                updatedAt: new Date(nower()).toISOString(),
-                userSpecifierSet: ['foo', 'bar'],
-                href: `${baseHref}/realms/${postResult.data.id}`
+                href: `${baseHref}/realms/${postResult.data.id}`,
+                securityContexts: {
+                    foo: {
+                        precondition: 'foo.bar.bazz',
+                        sessionOptions: {
+                            absoluteExpirationDuration: '1ms',
+                            inactivityExpirationDuration: '2ms'
+                        },
+                        versionNumber: 0
+                    }
+                },
+                updatedAt: new Date(nower()).toISOString()
             }
         ]
     });
@@ -85,8 +125,7 @@ test('realm pagination by `continueToken`', hermeticTest(
     const expectedFriendlyNames = [];
     for (let i = 0; i < 50; i++) {
         await soul.post('/realms', {
-            friendlyName: `Realm ${i}`,
-            userSpecifierSet: ['foo', 'bar']
+            friendlyName: `Realm ${i}`
         });
 
         expectedFriendlyNames.push(`Realm ${i}`);
@@ -107,7 +146,7 @@ test('realm pagination by `continueToken`', hermeticTest(
     t.deepEqual(actualFriendlyNames, expectedFriendlyNames);
 }));
 
-test('GET /realm/:realmId', hermeticTest(
+test('GET /realms/:realmId', hermeticTest(
         async (t, { baseHref, soul, nower }) => {
 
     const postResult = await soul.post('/realms');
@@ -118,13 +157,34 @@ test('GET /realm/:realmId', hermeticTest(
         id: postResult.data.id,
         friendlyName: '',
         createdAt: new Date(nower()).toISOString(),
-        updatedAt: new Date(nower()).toISOString(),
-        userSpecifierSet: [],
-        href: `${baseHref}/realms/${postResult.data.id}`
+        href: `${baseHref}/realms/${postResult.data.id}`,
+        securityContexts: {
+            anonymous: {
+                precondition: 'true',
+                sessionOptions: {},
+                versionNumber: 0
+            },
+            authenticated: {
+                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                sessionOptions: {
+                    inactivityExpirationDuration: '90d'
+                },
+                versionNumber: 0
+            },
+            secure: {
+                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                sessionOptions: {
+                    absoluteExpirationDuration: '6h',
+                    inactivityExpirationDuration: '30m'
+                },
+                versionNumber: 0
+            }
+        },
+        updatedAt: new Date(nower()).toISOString()
     });
 }));
 
-test('GET /realm/:realmId - no such realm', hermeticTest(
+test('GET /realms/:realmId - no such realm', hermeticTest(
         async (t, { baseHref, soul, nower }) => {
 
     const error = await t.throwsAsync(soul.get('/realms/rlm_nosuchrealm'));

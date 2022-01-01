@@ -20,20 +20,30 @@ module.exports = class RealmsService {
                 fromMongoDoc);
     }
 
-    async create(friendlyName, userSpecifierSet) {
-        await validate(friendlyName, check => check.string({
-            minLength: 0,
-            maxLength: 100
-        }));
-
-        await validate(userSpecifierSet, check => check.array({
-            elements: check.string({
-                minLength: 1,
-                maxLength: 100
+    async create(friendlyName, securityContexts = {}) {
+        await validate({
+            friendlyName,
+            securityContexts
+        }, check => ({
+            friendlyName: check.string({ minLength: 0, maxLength: 100 }),
+            securityContexts: check.object({}, {
+                unknownEntries: {
+                    key: check.string({ regexp: /^\w{1,50}$/ }),
+                    value: {
+                        precondition: check.optional(check.string({
+                            minLength: 0,
+                            maxLength: 1000
+                        })),
+                        sessionOptions: check.optional({
+                            absoluteExpirationDuration: check.optional(
+                                    check.friendlyDuration()),
+                            inactivityExpirationDuration: check.optional(
+                                    check.friendlyDuration())
+                        })
+                    }
+                }
             })
         }));
-
-        userSpecifierSet = [...new Set(userSpecifierSet)];
 
         const now = new Date(this.nower());
 
@@ -42,8 +52,29 @@ module.exports = class RealmsService {
         const newDoc = {
             createdAt: now,
             friendlyName,
-            updatedAt: now,
-            userSpecifierSet
+            securityContexts:
+                Object.fromEntries(Object.entries(securityContexts)
+                        .map(([
+                            contextName,
+                            {
+                                precondition = 'true',
+                                sessionOptions: {
+                                    absoluteExpirationDuration,
+                                    inactivityExpirationDuration
+                                } = {}
+                            }
+                        ]) => ([
+                            contextName,
+                            {
+                                precondition,
+                                sessionOptions: {
+                                    absoluteExpirationDuration,
+                                    inactivityExpirationDuration
+                                },
+                                versionNumber: 0
+                            }
+                        ]))),
+            updatedAt: now
         };
 
         await this.dbClient.collection('Realms')
@@ -71,7 +102,7 @@ function fromMongoDoc(d) {
         createdAt: d.createdAt,
         friendlyName: d.friendlyName,
         id: d._id,
-        updatedAt: d.updatedAt,
-        userSpecifierSet: d.userSpecifierSet
+        securityContexts: d.securityContexts,
+        updatedAt: d.updatedAt
     };
 }

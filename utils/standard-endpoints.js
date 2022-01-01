@@ -1,15 +1,27 @@
 'use strict';
 
 const bodyParser = require('koa-bodyparser');
+const errors = require('../standard-errors');
 const lodash = require('lodash');
 const validate = require('./soul-validate');
 
-module.exports = (router, spec) => {
+module.exports = async (router, spec) => {
     for (const [endpoint, details] of Object.entries(spec)) {
         const [method, path] = endpoint.split(' ');
 
         const preMiddleware = [];
-        if (lodash.get(details, 'validator.body')) {
+
+        try {
+            await validate({ body: undefined },
+                    (details.validator || (() => {})),
+                    { validationWhitelist: ['/body'] });
+        }
+        catch (e) {
+            if (e.code !== 'VALIDATION_ERROR') {
+                throw errors.unexpectedError(e);
+            }
+
+            // We're expecting a body.
             preMiddleware.push(bodyParser(details.bodyparser || {}));
         }
 

@@ -43,7 +43,7 @@ module.exports = (...args) => async t => {
         const runtimeDeps = {
             errorReporter: new FakeErrorReporter(t.log),
             log: buildFakeLogger(t.log),
-            mongoConnect: uri => iMongo.MongoClient.connect(uri),
+            mongoConnect: (uri, opts) => iMongo.MongoClient.connect(uri, opts),
             nower,
             schedule: fakeScheduler()
         }

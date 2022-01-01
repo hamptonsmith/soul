@@ -1,10 +1,30 @@
 'use strict';
 
+const MAX_CONTIGUOUS_INTEGER = Math.pow(2, 53);
+
+
 module.exports = {
     agentFingerprint() {
         return (check, actual) => {
-            check.appendSchema(check.optional(
-                    check.string({ minLength: 0, maxLength: 1000 })));
+            check.appendSchema(check.string({ minLength: 0, maxLength: 1000 }));
+        };
+    },
+    friendlyDuration() {
+        return (check, actual) => {
+            check.appendSchema(check.string({
+                regexp: /^\d{1,15}(?:ms|s|m|h|d|y)$/
+            }));
+        };
+    },
+    positiveContiguousInteger() {
+        return (check, actual) => {
+            check.appendSchema(
+                    check.number({ min: 0, max: MAX_CONTIGUOUS_INTEGER }));
+        };
+    },
+    securityContextName() {
+        return (check, actual) => {
+            check.appendSchema(check.string({ regexp: /^\w{1,50}$/ }));
         };
     },
     sessionToken() {
@@ -30,6 +50,11 @@ module.exports = {
             if (!new RegExp(`^${c}+_${c}+$`).test(actual)) {
                 throw new this.ValidationError(`not id shaped`, actual);
             }
+        };
+    },
+    versionedSecurityContextName() {
+        return (check, actual) => {
+            check.appendSchema(check.string({ regexp: /^\w{1,50}:\d{1,15}$/ }));
         };
     }
 };

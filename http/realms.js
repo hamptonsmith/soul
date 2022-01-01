@@ -39,29 +39,19 @@ module.exports = {
     },
     'POST /realms': {
         validator: {
-            body: {
-                friendlyName: check =>
-                        check.optional(check.string({
-                            minLength: 0,
-                            maxLength: 100
-                        })),
-                userSpecifierSet: check =>
-                        check.optional(check.array({
-                            elements: check.string({
-                                minLength: 1,
-                                maxLength: 100
-                            })
-                        }))
-            }
+            // A validator instructs standard-middleware to install a body
+            // parser, but there's no validation to do here beyond what will be
+            // done by the service.
+            body: {}
         },
         handler: async (ctx, next) => {
             const {
                 friendlyName = '',
-                userSpecifierSet = []
+                securityContexts = ctx.state.config.defaultRealmSecurityContexts
             } = ctx.request.body;
 
-            const doc = await ctx.services.realms
-                    .create(friendlyName, userSpecifierSet);
+            const doc = await ctx.services.realms.create(
+                    friendlyName, securityContexts);
             doc.href = `${ctx.state.baseHref}/realms/${doc.id}`;
 
             ctx.response.set('Location', doc.href);

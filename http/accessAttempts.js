@@ -2,91 +2,99 @@
 
 const bodyParser = require('koa-bodyparser');
 const errors = require('../standard-errors');
+const httpUtils = require('./http-utils');
 const lodash = require('lodash');
 const tokens = require('../utils/tokens');
 
 const { DateTime } = require('luxon');
-const { remapValidationErrorPaths } = require('./http-utils');
 
 module.exports = {
     'POST /realms/:realmId/accessAttempts': {
-        validator: {
+        validator: check => ({
             body: {
+                securityContext: check.versionedSecurityContextName(),
                 sessionTokens: check => check.array({
                     elements: check.sessionToken()
                 })
             }
-        },
+        }),
         handler: async (ctx, next) => {
-            if (ctx.request.body.sessionTokens) {
-                const decodedTokens = tokens.decodeValid(
-                        ctx.request.body.sessionTokens, ctx.state.config);
+            const decodedTokens = tokens.decodeValid(
+                    ctx.request.body.sessionTokens, ctx.state.config);
 
-                let session;
-                let error;
+            let session;
+            let error;
 
-                try {
-                    if (Object.keys(decodedTokens).length === 0) {
-                        throw errors.invalidCredentials({
-                            reason: 'no valid tokens'
-                        });
-                    }
+            try {
+                const sessionsWithCorrectSecurityContext =
+                        Object.entries(decodedTokens)
+                        .filter(([,{tokens}]) => tokens.every(t =>
+                            t.securityContext ===
+                                    ctx.request.body.securityContext));
 
-                    const sessionId = Object.keys(decodedTokens)[0];
-                    const { tokens: credentialList } = decodedTokens[sessionId];
-
-                    await remapValidationErrorPaths({
-                        '/realmId': '/path/realmId',
-                        '/sessionId': '/body/sessionTokens',
-                        '/agentFingerprint': '/body/agentFingerprint'
-                    }, async () => {
-                        session = await ctx.services.sessions.validateSessionCredentials(
-                                ctx.params.realmId, sessionId,
-                                credentialList,
-                                ctx.params.agentFingerprint,
-                                ctx.state.config);
+                if (Object.keys(sessionsWithCorrectSecurityContext)
+                        .length === 0) {
+                    throw errors.invalidCredentials({
+                        reason: 'no valid tokens'
                     });
                 }
-                catch (e) {
-                    if (e.code !== 'MALFORMED_TOKEN'
-                            && e.code !== 'INVALID_CREDENTIALS') {
-                        throw errors.unexpectedError(e);
-                    }
 
-                    error = e;
+                const [ sessionId, { tokens: credentialsList } ] =
+                        sessionsWithCorrectSecurityContext[0];
+
+                await httpUtils.remapValidationErrorPaths({
+                    '/realmId': '/path/realmId',
+                    '/expectedSecurityContext': '/body/securityContext',
+                    '/sessionId': '/body/sessionTokens',
+                    '/agentFingerprint': '/body/agentFingerprint'
+                }, async () => {
+                    session = await ctx.services.sessions.validateSessionCredentials(
+                            ctx.params.realmId,
+                            ctx.request.body.securityContext, sessionId,
+                            credentialsList, ctx.params.agentFingerprint,
+                            ctx.state.config);
+                });
+            }
+            catch (e) {
+                if (e.code !== 'MALFORMED_TOKEN'
+                        && e.code !== 'INVALID_CREDENTIALS') {
+                    throw errors.unexpectedError(e);
                 }
 
-                ctx.status = 200;
-                ctx.body = {
-                    resolution: session ? 'valid'
-                            : error.prejudice ? 'invalid-with-prejudice'
-                            : 'invalid-no-prejudice',
-                    relog: lodash.get(error, 'details.relog'),
-                    retry: lodash.get(error, 'details.retry'),
+                ctx.state.log(`\n\n===== Access Attempt in Request ${ctx.request.id} Rejected =====`)
+                ctx.state.log(e.stack);
+                ctx.state.log();
+
+                error = e;
+            }
+
+            ctx.status = 200;
+            ctx.body = {
+                resolution: session ? 'valid'
+                        : error.prejudice ? 'invalid-with-prejudice'
+                        : 'invalid-no-prejudice',
+                relog: lodash.get(error, 'details.relog'),
+                retry: lodash.get(error, 'details.retry'),
+            };
+
+            if (session) {
+                const addTokens = [];
+
+                if (session.nextEraCredentials) {
+                    addTokens.push(tokens.encode(session.id,
+                            session.nextEraCredentials, ctx.state.config));
+                }
+
+                const retireTokens = session.retireCredentials.map(c =>
+                        tokens.encode(session.id, c, ctx.state.config));
+
+                ctx.body.session = {
+                    addTokens,
+                    retireTokens: session.retireCredentials.map(c =>
+                            tokens.encode(session.id, c, ctx.state.config)),
                 };
 
-                if (session) {
-                    ctx.body.session = {
-                        createdAt: session.createdAt,
-                        currentEraStartedAt: session.currentEraStartedAt,
-                        currentEraNumber: session.currentEraNumber,
-                        href: `${ctx.state.baseHref}`
-                                + `/realms/${ctx.params.realmId}`
-                                + `/sessions/${session.id}`,
-                        id: session.id,
-                        lastUsedAt: session.lastUsedAt,
-                        realmId: session.realmId,
-                        userId: session.userId
-                    };
-
-                    if (session.nextEraCredentials) {
-                        ctx.body.nextSessionToken = tokens.encode(session.id,
-                                session.eraCredentials, ctx.state.config);
-                    }
-                }
-            }
-            else {
-                throw new Error();
+                httpUtils.copySessionFields(session, ctx.body.session, ctx);
             }
         }
     }
