@@ -45,7 +45,7 @@ module.exports = class SessionsService {
             subjectId
         }, check => ({
             realmId: check.soulId(RealmsService.idPrefix),
-            securityContextName: check.string({ regexp: /^\w{1,50}$/ }),
+            securityContextName: check.securityContextName(),
             agentFingerprint: check.optional(check.agentFingerprint()),
             subjectId: check.optional(
                     check.string({ minLength: 1, maxLength: 200 }))
@@ -120,8 +120,7 @@ module.exports = class SessionsService {
             agentFingerprint
         }, check => ({
             realmId: check.soulId(RealmsService.idPrefix),
-            expectedSecurityContext:
-                    check.string({ regexp: /^\w{1,50}:\d{1,7}$/ }),
+            expectedSecurityContext: check.versionedSecurityContextName(),
             sessionId: check.soulId(SessionsService.idPrefix),
             agentFingerprint: check.optional(check.agentFingerprint())
         }));

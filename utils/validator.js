@@ -25,10 +25,7 @@ class ValidationContext {
     };
 
     constructor(checkerTemplate, {
-        hierarchyGlobalSchemas = [],
-        validationWhitelist
-    } = {}) {
-        this.whitelist = validationWhitelist;
+        hierarchyGlobalSchemas = []} = {}) {
         this.checker = {};
 
         for (const [methodName, method] of Object.entries(checkerTemplate)) {
@@ -85,10 +82,10 @@ class ValidationContext {
     }
 }
 
-module.exports = async (value, schema, checkerExtensions, options = {}) => {
+module.exports = async (value, schema, options = {}) => {
     const ctx = new ValidationContext({
         ...defaultChecker,
-        ...checkerExtensions
+        ...options.checkerExtensions
     }, options);
 
     await validate(value, schema, ctx);
@@ -97,15 +94,6 @@ module.exports = async (value, schema, checkerExtensions, options = {}) => {
 module.exports.ValidationError = ValidationError;
 
 async function validate(value, schemas, ctx) {
-    if (ctx.whitelist) {
-        const pathPtr = jsonpointer.compile(ctx.stack.map(f => f.key)) + '/';
-
-        if (ctx.whitelist.every(
-                whitelisted => !`${whitelisted}/`.startsWith(pathPtr))) {
-            return;
-        }
-    }
-
     if (!Array.isArray(schemas)) {
         schemas = [schemas];
     }

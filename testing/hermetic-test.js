@@ -3,14 +3,26 @@
 const axios = require('axios');
 const buildInterceptableMongo = require('./utils/interceptable-mongo');
 const buildFakeLogger = require('./fakes/fake-logger');
+const crypto = require('crypto');
 const CSON = require('cson-parser');
 const FakeErrorReporter = require('./fakes/fake-error-reporter');
+const fs = require('fs');
 const fakeScheduler = require('./fakes/fake-scheduler');
 const http = require('http');
+const jsonwebtoken = require('jsonwebtoken');
+const JwksClient = require('../utils/JwksClient');
 const ms = require('ms');
+const pathLib = require('path');
+const pemToJwk = require('pem-jwk').pem2jwk;
 const soul = require('../app');
 
 const { MongoClient } = require('mongodb');
+
+const rsaPrivateKeyPem = fs.readFileSync(
+        pathLib.join(__dirname, 'fixtures', 'rsa.priv.pem'), 'utf8');
+
+const rsaPublicKeyJwt = pemToJwk(fs.readFileSync(
+        pathLib.join(__dirname, 'fixtures', 'rsa.pub.pem'), 'utf8'));
 
 module.exports = (...args) => async t => {
     const fn = args.find(a => typeof a === 'function');
@@ -18,17 +30,57 @@ module.exports = (...args) => async t => {
 
     const testId = randomTestId();
 
-    const config = {
-        "mongodb": {
-            "dbName": `testdb-${testId}`,
-            "uri": `mongodb://localhost:${process.env.MONGOD_PORT}`
-        },
-        "port": 0,
+    let config = {
+        jwks: {
+            'https://local.literal.key.com': {
+                literal: {
+                    keys: [
+                        {
+                            alg: 'HS256',
+                            k: crypto.randomBytes(32).toString('base64url'),
+                            kid: 'key1',
+                            kty: 'oct',
+                            use: 'sig'
+                        },
+                        {
+                            ...rsaPublicKeyJwt,
 
-        ...opts.config
+                            alg: 'RS256',
+                            kid: 'key2',
+                            use: 'sig',
+
+                            // This just makes life easy on our signing
+                            // helper function function.
+                            cheatPrivateKey: rsaPrivateKeyPem
+                        }
+                    ]
+                }
+            }
+        },
+        mongodb: {
+            dbName: `testdb-${testId}`,
+            uri: `mongodb://localhost:${process.env.MONGOD_PORT}`
+        },
+        port: 0,
     };
 
+    if (opts.config) {
+        if (typeof opts.config === 'function') {
+            config = {
+                ...config,
+                ...opts.config(config)
+            };
+        }
+        else {
+            config = {
+                ...config,
+                ...opts.config
+            }
+        }
+    }
+
     const nower = fakeNower();
+    let jwksClient;
 
     // This is a client for the service to use and close. We'll make our own
     // later for test framework business.
@@ -39,6 +91,46 @@ module.exports = (...args) => async t => {
     iDbClient.addInterceptor = iMongo.addInterceptor.bind(iMongo);
 
     let server;
+
+    async function buildJwt(issuer, alg, kid, payload) {
+        if (!jwksClient) {
+            jwksClient = new JwksClient({
+                getData() { return server.config(); }
+            }, { nower });
+        }
+
+        const jwk = await jwksClient.getJwk(issuer, alg, kid);
+
+        const signingOpts = {
+            algorithm: alg,
+            audience: server.config().audienceId,
+            keyid: kid
+        };
+
+        if (!payload.iss) {
+            // jsonwebtoken distinguishes `undefined` from not set,
+            // naturally.
+            signingOpts.issuer = issuer;
+        }
+
+        let jwt;
+        if (alg === 'HS256') {
+            jwt = jsonwebtoken.sign({ iat: nower(), ...payload },
+                    Buffer.from(jwk.k, 'base64url'),
+                    signingOpts);
+        }
+        else if (alg === 'RS256') {
+            jwt = jsonwebtoken.sign({ iat: nower(), ...payload },
+                    jwk.cheatPrivateKey,
+                    signingOpts);
+        }
+        else {
+            throw new Error('Can\'t sign with alg ' + alg + ' in tests.');
+        }
+
+        return jwt;
+    }
+
     try {
         const runtimeDeps = {
             errorReporter: new FakeErrorReporter(t.log),
@@ -49,10 +141,12 @@ module.exports = (...args) => async t => {
         }
 
         server = await soul(
-                [`data:text/plain,${CSON.stringify(config)}`], runtimeDeps);
+                [`data:text/plain,${encodeURIComponent(CSON.stringify(config))}`],
+                runtimeDeps);
 
         await fn(t, {
             baseHref: server.url,
+            buildJwt,
             config,
             dbClient: iDbClient,
             doBestEffort: async (name, pr) => await pr,

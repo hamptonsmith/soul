@@ -1,8 +1,5 @@
 'use strict';
 
-const MAX_CONTIGUOUS_INTEGER = Math.pow(2, 53);
-
-
 module.exports = {
     agentFingerprint() {
         return (check, actual) => {
@@ -14,12 +11,6 @@ module.exports = {
             check.appendSchema(check.string({
                 regexp: /^\d{1,15}(?:ms|s|m|h|d|y)$/
             }));
-        };
-    },
-    positiveContiguousInteger() {
-        return (check, actual) => {
-            check.appendSchema(
-                    check.number({ min: 0, max: MAX_CONTIGUOUS_INTEGER }));
         };
     },
     securityContextName() {

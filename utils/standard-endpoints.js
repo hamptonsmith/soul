@@ -11,18 +11,9 @@ module.exports = async (router, spec) => {
 
         const preMiddleware = [];
 
-        try {
-            await validate({ body: undefined },
-                    (details.validator || (() => {})),
-                    { validationWhitelist: ['/body'] });
-        }
-        catch (e) {
-            if (e.code !== 'VALIDATION_ERROR') {
-                throw errors.unexpectedError(e);
-            }
-
+        if (details.bodyparser) {
             // We're expecting a body.
-            preMiddleware.push(bodyParser(details.bodyparser || {}));
+            preMiddleware.push(bodyParser(details.bodyparser));
         }
 
         router[method.toLowerCase()](path, ...preMiddleware,

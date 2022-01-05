@@ -38,12 +38,13 @@ module.exports = {
         }
     },
     'POST /realms': {
-        validator: {
+        bodyparser: {},
+        validator: check => ({
             // A validator instructs standard-middleware to install a body
             // parser, but there's no validation to do here beyond what will be
             // done by the service.
-            body: {}
-        },
+            body: check.object({})
+        }),
         handler: async (ctx, next) => {
             const {
                 friendlyName = '',

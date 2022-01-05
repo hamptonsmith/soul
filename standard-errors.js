@@ -39,7 +39,7 @@ module.exports = {
         e.details = cause.details;
         e.code = cause.code;
 
-        throw e;
+        return e;
     },
     UnexpectedError: class extends SbError {
         static messageTemplate = 'Unexpected error: {{{message}}}';

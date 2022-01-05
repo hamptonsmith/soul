@@ -10,6 +10,7 @@ const { DateTime } = require('luxon');
 
 module.exports = {
     'POST /realms/:realmId/accessAttempts': {
+        bodyparser: {},
         validator: check => ({
             body: {
                 securityContext: check.versionedSecurityContextName(),

@@ -17,10 +17,6 @@ module.exports = {
     'GET /realms/:realmId/sessions': {
         validator: {
             query: {
-                agentFingerprint: check => check.optional(check.string({
-                    minLength: 1,
-                    maxLength: 1000
-                })),
                 sessionToken: check => check.optional(check.string({
                     minLength: 1,
                     maxLength: 500
@@ -89,10 +85,11 @@ module.exports = {
         }
     },
     'POST /realms/:realmId/sessions': {
+        bodyparser: {},
         validator: check => ({
             body: check.switch(
                 { mechanism: check.string() },
-                actual => actual.mechanism.trim().toLowerCase(),
+                actual => actual.mechanism.trim(),
                 {
                     dev: {
                         jwtPayload: {
@@ -134,7 +131,7 @@ var sessionMechanisms = {
     },
     idToken: async ctx => {
         const jwtPayload =
-                await ctx.services.jwt.validate(ctx.request.body.token);
+                await ctx.services.jwts.verify(ctx.request.body.token);
 
         const { status, body } = await jwtPayloadToSessionResult(
                 jwtPayload, ctx, {

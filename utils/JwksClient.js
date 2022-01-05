@@ -32,38 +32,47 @@ module.exports = class JwksClient {
         this.throttledSlurpUri = new ThrottledSlurpUri(nower);
     }
 
-    async getSecret(authority, qAlg, qKid) {
+    async getJwks(authority) {
+        // No __proto__ nonsense.
+        if ({}[authority]) {
+            throw new UnfamiliarAuthority({ authority });
+        }
+
         const authorityConfig =
-                lodash.get(config.getData(), ['jwks', authority]);
+                lodash.get(this.config.getData(), ['jwks', authority]);
 
         if (!authorityConfig) {
             throw new UnfamiliarAuthority({ authority });
         }
 
-        const cacheKey = JSON.stringify(authority, qAlg, qKid);
+        let jwks;
+        if (authorityConfig.uri) {
+            jwks = await this.throttledSlurpUri.slurpUri(
+                    authorityConfig.uri);
+        }
+        else if (authorityConfig.literal) {
+            jwks = authorityConfig.literal;
+        }
+        else {
+            throw new UnfamiliarAuthority({ authority },
+                    new Error(`config.jwks["${authority}"] is misconfigured. `
+                            + `Must have field \`uri\` or \`literal\`.`));
+        }
+
+        return jwks;
+    }
+
+    async getJwk(authority, qAlg, qKid) {
+        const cacheKey = JSON.stringify([authority, qAlg, qKid]);
 
         let jwk;
-
         if (this.cache.has(cacheKey)) {
             jwk = this.cache.get(cacheKey);
         }
         else {
+            const jwks = await this.getJwks(authority);
 
-            let jwks;
-            if (authorityConfig.uri) {
-                jwks = await this.throttledSlurpUri.slurpUri(
-                        authorityConfig.uri);
-            }
-            else if (authorityConfig.literal) {
-                jwks = authorityConfig.literal;
-            }
-            else {
-                throw new UnfamiliarAuthority({ authority },
-                        new Error(`config.jwks["${authority}"] is misconfigured. `
-                                + `Must have field \`uri\` or \`literal\`.`));
-            }
-
-            jwk = jwks.find(key =>
+            jwk = jwks.keys.find(key =>
                     key.alg === qAlg
                     && key.kid === qKid
                     && key.use === 'sig');
@@ -75,8 +84,14 @@ module.exports = class JwksClient {
 
         this.cache.set(cacheKey, jwk);
 
+        return jwk;
+    }
+
+    async getSecret(authority, qAlg, qKid) {
+        const jwk = await this.getJwk(authority, qAlg, qKid);
+
         let secret;
-        if (jwk.kty === 'rsa' || jwk.kty === 'ec') {
+        if (jwk.kty === 'RSA' || jwk.kty === 'EC') {
             secret = jwkToPem(jwk);
         }
         else if (jwk.kty === 'oct') {

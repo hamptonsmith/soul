@@ -39,7 +39,10 @@ class UnexpectedError extends SbError {
 }
 
 const publicErrors = {
+    NO_SUCH_KEY: 401,
     NO_SUCH_REALM: 404,
+    UNACCEPTABLE_JWT: 401,
+    UNFAMILIAR_AUTHORITY: 401,
     VALIDATION_ERROR: 500
 };
 
@@ -77,22 +80,28 @@ module.exports = async (argv, runtimeOpts = {}) => {
     const serviceConfigDoc = await readyService(
             dbClient.collection('ServiceData'), runtimeOpts);
 
-    let config = {
-        ...serverConfig,
-        ...defaultServiceConfig,
-        ...serviceConfigDoc.getData()
-    };
-
-    serviceConfigDoc.on('documentChanged', () => {
-        config = {
+    function buildFinalConfig() {
+        return {
             ...serverConfig,
             ...defaultServiceConfig,
             ...serviceConfigDoc.getData()
         };
+    }
+
+    let config = buildFinalConfig();
+
+    const configContainer = {
+        getData() {
+            return config;
+        }
+    };
+
+    serviceConfigDoc.on('documentChanged', () => {
+        config = buildFinalConfig();
     });
 
     const jsonata = new JsonataService(runtimeOpts);
-    const jwts = new JwtsService(config, runtimeOpts);
+    const jwts = new JwtsService(configContainer, runtimeOpts);
     const realms = new RealmsService(dbClient, runtimeOpts);
 
     const sessions =
@@ -224,6 +233,9 @@ module.exports = async (argv, runtimeOpts = {}) => {
             serviceConfigDoc.close();
             await mongoClient.close();
         },
+        config() {
+            return config;
+        },
         url: `http://localhost:${port}`
     };
 };
@@ -295,6 +307,10 @@ async function readyService(serviceData, runtimeDeps) {
     await configDoc.update(async config => {
         if (!config.signingSecret) {
             config.signingSecret = bs58.encode(crypto.randomBytes(32));
+        }
+
+        if (!config.audienceId) {
+            config.audienceId = 'aud_' + bs58.encode(crypto.randomBytes(32));
         }
     });
 

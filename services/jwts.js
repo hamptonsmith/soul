@@ -12,6 +12,10 @@ class UnknownKey extends SbError {
             + 'algorithm {{{algorithm}}} and id {{{kid}}}.';
 }
 
+class UnacceptableJwt extends SbError {
+    static messageTemplate = 'Invalid JWT: {{{reason}}}';
+}
+
 module.exports = class JwtsService {
     cachedJwkClients = {};
 
@@ -21,17 +25,12 @@ module.exports = class JwtsService {
     }
 
     async verify(token) {
+        // `jsonwebtoken` swallows useful errors in get-key functions, so we
+        // do this outside and just pass in the right answer.
+        const secret = await getSecretForToken.call(this, token);
+
         const payload = await new Promise((resolve, reject) => {
-            jsonwebtoken.verify(token, async (header, getKeyCb) => {
-                try {
-                    const secret = await this.jwksClient.getSecret(
-                            header.iss, header.alg, header.kid);
-                    getKeyCb(null, secret);
-                }
-                catch (e) {
-                    getKeyCb(errors.trackingError(e));
-                }
-            }, {
+            jsonwebtoken.verify(token, secret, {
                 audience: this.config.getData().audienceId
             }, (err, payload) => {
                 if (err) {
@@ -55,3 +54,32 @@ module.exports = class JwtsService {
         return payload;
     }
 };
+
+async function getSecretForToken(token) {
+    const untrustedJwt = jsonwebtoken.decode(token, { complete: true });
+
+    // `jsonwebtoken` swallows useful errors in get-key functions, so we
+    // do this outside and just pass in the right answer.
+
+    if (!untrustedJwt.payload.iss) {
+        throw new UnacceptableJwt({
+            reason: 'No `iss` claim.'
+        });
+    }
+
+    if (!untrustedJwt.header.alg) {
+        throw new UnacceptableJwt({
+            reason: 'No `alg` header.'
+        });
+    }
+
+    if (!untrustedJwt.header.kid) {
+        throw new UnacceptableJwt({
+            reason: 'No `kid` header.'
+        });
+    }
+
+    return await this.jwksClient.getSecret(
+            untrustedJwt.payload.iss, untrustedJwt.header.alg,
+            untrustedJwt.header.kid);
+}
