@@ -1,9 +1,23 @@
 'use strict';
 
+const typeIs = require('type-is');
+
 module.exports = {
     agentFingerprint() {
         return (check, actual) => {
             check.appendSchema(check.string({ minLength: 0, maxLength: 1000 }));
+        };
+    },
+    contentType(specifiers) {
+        if (!Array.isArray(specifiers)) {
+            specifiers = [specifiers];
+        }
+
+        return async (check, actual) => {
+            if (!typeIs.is(actual, specifiers)) {
+                throw new check.ValidationError('must be one of: ' + specifiers,
+                        actual);
+            }
         };
     },
     friendlyDuration() {
@@ -12,6 +26,24 @@ module.exports = {
                 regexp: /^\d{1,15}(?:ms|s|m|h|d|y)$/
             }));
         };
+    },
+    jsonPatch() {
+        return (check, actual) => check.array({
+            elements: [
+                { path: check.string() },
+                check.switch(
+                    actual => actual.op,
+                    {
+                        add: { value: check.defined() },
+                        copy: { from: check.string() },
+                        move: { from: check.string() },
+                        remove: {},
+                        replace: { value: check.defined() },
+                        test: { value: check.defined() }
+                    }
+                )
+            ]
+        });
     },
     securityContextName() {
         return (check, actual) => {

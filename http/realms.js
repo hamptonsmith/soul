@@ -5,12 +5,13 @@ const bodyParser = require('koa-bodyparser');
 module.exports = {
     'GET /realms': {
         handler: async (ctx, next) => {
-            const { after, docs } = await ctx.services.realms.byCreationTime.find(
-                    {},
-                    ctx.query.after,
-                    ctx.query.limit !== undefined
-                            ? Number.parseInt(ctx.query.limit)
-                            : undefined);
+            const { after, docs } =
+                    await ctx.state.services.realms.byCreationTime.find(
+                        {},
+                        ctx.query.after,
+                        ctx.query.limit !== undefined
+                                ? Number.parseInt(ctx.query.limit)
+                                : undefined);
 
             ctx.status = 200;
             ctx.body = {
@@ -27,8 +28,8 @@ module.exports = {
     },
     'GET /realms/:realmId': {
         handler: async (ctx, next) => {
-            const realm =
-                    await ctx.services.realms.fetchById(ctx.params.realmId);
+            const realm = await ctx.state.services.realms.fetchById(
+                    ctx.params.realmId);
 
             ctx.status = 200;
             ctx.body = {
@@ -48,10 +49,11 @@ module.exports = {
         handler: async (ctx, next) => {
             const {
                 friendlyName = '',
-                securityContexts = ctx.state.config.defaultRealmSecurityContexts
+                securityContexts =
+                        ctx.state.serviceConfig.defaultRealmSecurityContexts
             } = ctx.request.body;
 
-            const doc = await ctx.services.realms.create(
+            const doc = await ctx.state.services.realms.create(
                     friendlyName, securityContexts);
             doc.href = `${ctx.state.baseHref}/realms/${doc.id}`;
 

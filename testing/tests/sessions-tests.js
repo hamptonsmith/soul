@@ -2,9 +2,19 @@
 
 const bs58 = require('bs58');
 const defaultConfig = require('../../default-service-config');
+const fs = require('fs');
 const hermeticTest = require('../hermetic-test');
+const jsonpointer = require('json-pointer');
 const jsonwebtoken = require('jsonwebtoken');
+const pathLib = require('path');
+const pemToJwk = require('pem-jwk').pem2jwk;
 const test = require('ava');
+
+const rsaPrivateKeyPem = fs.readFileSync(
+        pathLib.join(__dirname, '..', 'fixtures', 'rsa.priv.pem'), 'utf8');
+
+const rsaPublicKeyJwt = pemToJwk(fs.readFileSync(
+        pathLib.join(__dirname, '..', 'fixtures', 'rsa.pub.pem'), 'utf8'));
 
 test('dev mechanism', hermeticTest(
         async (t, { soul, nower }) => {
@@ -62,6 +72,31 @@ test('rsa key', hermeticTest(
         async (t, { buildJwt, soul, nower }) => {
 
     const { data: { id: realmId }} = await soul.post('/realms');
+
+    await soul.patch('/config/explicit', [
+        {
+            op: 'add',
+            path: jsonpointer.compile([
+                'jwks', 'https://local.literal.key.com', 'literal', 'keys', '-'
+            ]),
+            value: {
+                ...rsaPublicKeyJwt,
+
+                alg: 'RS256',
+                kid: 'key2',
+                use: 'sig',
+
+                // This just makes life easy on our signing
+                // helper function function.
+                cheatPrivateKey: rsaPrivateKeyPem
+            }
+        }
+    ],
+    {
+        headers: {
+            'Content-Type': 'application/json-patch+json'
+        }
+    });
 
     const { data: sessionData } = await soul.post(
             `/realms/${realmId}/sessions`, {
@@ -124,34 +159,6 @@ test('unknown issuer', hermeticTest(
     t.is(error.response.data.code, 'UNFAMILIAR_AUTHORITY');
 }));
 
-test('misconfigured issuer', hermeticTest({
-    config: baseConfig => ({
-        jwks: {
-            'https://misconfigured.com': {},
-
-            ...baseConfig.jwks
-        }
-    })
-}, async (t, { buildJwt, soul, nower }) => {
-    const { data: { id: realmId }} = await soul.post('/realms');
-
-    const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`,
-            {
-                mechanism: 'idToken',
-                securityContext: 'authenticated',
-                token: await buildJwt(
-                        'https://local.literal.key.com', 'HS256',
-                        'key1',
-                        {
-                            iss: 'https://misconfigured.com',
-                            sub: 'testuser1'
-                        })
-            }));
-
-    t.is(error.response.data.code, 'UNFAMILIAR_AUTHORITY');
-}));
-
 test('no such key for issuer', hermeticTest(
         async (t, { buildJwt, soul, nower }) => {
     const { data: { id: realmId }} = await soul.post('/realms');
@@ -174,10 +181,14 @@ test('no such key for issuer', hermeticTest(
     t.is(error.response.data.code, 'NO_SUCH_KEY');
 }));
 
-test('unknown kty', hermeticTest({
-    config: baseConfig => ({
-        jwks: {
-            'https://weirdkey.com': {
+test('unknown kty', hermeticTest(async (t, { buildJwt, soul, nower }) => {
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    await soul.patch('/config/explicit', [
+        {
+            op: 'add',
+            path: jsonpointer.compile(['jwks', 'https://weirdkey.com']),
+            value: {
                 literal: {
                     keys: [
                         {
@@ -188,13 +199,14 @@ test('unknown kty', hermeticTest({
                         }
                     ]
                 }
-            },
-
-            ...baseConfig.jwks
+            }
         }
-    })
-}, async (t, { buildJwt, soul, nower }) => {
-    const { data: { id: realmId }} = await soul.post('/realms');
+    ],
+    {
+        headers: {
+            'Content-Type': 'application/json-patch+json'
+        }
+    });
 
     const error = await t.throwsAsync(soul.post(
             `/realms/${realmId}/sessions`,

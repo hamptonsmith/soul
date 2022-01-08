@@ -19,9 +19,9 @@ class UnacceptableJwt extends SbError {
 module.exports = class JwtsService {
     cachedJwkClients = {};
 
-    constructor(config, runtimeDeps) {
-        this.config = config;
-        this.jwksClient = new JwksClient(config, runtimeDeps)
+    constructor(leylineSettings, runtimeDeps) {
+        this.leylineSettings = leylineSettings;
+        this.jwksClient = new JwksClient(leylineSettings, runtimeDeps)
     }
 
     async verify(token) {
@@ -31,7 +31,7 @@ module.exports = class JwtsService {
 
         const payload = await new Promise((resolve, reject) => {
             jsonwebtoken.verify(token, secret, {
-                audience: this.config.getData().audienceId
+                audience: this.leylineSettings.getConfig().audienceId
             }, (err, payload) => {
                 if (err) {
                     reject(err);

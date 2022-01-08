@@ -4,16 +4,17 @@ const accessAttemptsRoutes = require('./http/accessAttempts');
 const bodyParser = require('koa-bodyparser');
 const bs58 = require('bs58');
 const clone = require('clone');
+const configRoutes = require('./http/config');
 const ConsoleErrorReporter = require('./utils/ConsoleErrorReporter');
 const CSON = require('cson-parser');
 const crypto = require('crypto');
 const deepequal = require('deepequal');
-const defaultServiceConfig = require('./default-service-config');
 const fsLib = require('fs');
 const http = require('http');
 const JsonataService = require('./services/jsonata');
 const JwtsService = require('./services/jwts');
 const Koa = require('koa');
+const LeylineSettingsService = require('./services/LeylineSettingsService');
 const lodash = require('lodash');
 const Mustache = require('mustache');
 const optimisticDocument = require('./utils/OptimisticDocument');
@@ -80,30 +81,11 @@ module.exports = async (argv, runtimeOpts = {}) => {
     const serviceConfigDoc = await readyService(
             dbClient.collection('ServiceData'), runtimeOpts);
 
-    function buildFinalConfig() {
-        return {
-            ...serverConfig,
-            ...defaultServiceConfig,
-            ...serviceConfigDoc.getData()
-        };
-    }
-
-    let config = buildFinalConfig();
-
-    const configContainer = {
-        getData() {
-            return config;
-        }
-    };
-
-    serviceConfigDoc.on('documentChanged', () => {
-        config = buildFinalConfig();
-    });
-
     const jsonata = new JsonataService(runtimeOpts);
-    const jwts = new JwtsService(configContainer, runtimeOpts);
+    const leylineSettings = new LeylineSettingsService(serviceConfigDoc);
     const realms = new RealmsService(dbClient, runtimeOpts);
 
+    const jwts = new JwtsService(leylineSettings, runtimeOpts);
     const sessions =
             new SessionsService(dbClient, jsonata, realms, runtimeOpts);
 
@@ -111,6 +93,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
         dbClient,
         jsonata,
         jwts,
+        leylineSettings,
         realms,
         sessions
     };
@@ -120,12 +103,12 @@ module.exports = async (argv, runtimeOpts = {}) => {
 
     app.use(async (ctx, next) => {
         ctx.request.id = randomId();
-        ctx.services = services;
 
-        // Note that because we reseat `config` when our underlying service
-        // config changes, each request gets a consistent view of config.
-        ctx.state.config = config;
         ctx.state.baseHref = `${ctx.protocol}://${ctx.host}`;
+        ctx.state.serverConfig = serverConfig;
+        ctx.state.serviceConfig = leylineSettings.getConfig();
+        ctx.state.services = services;
+
         Object.assign(ctx.state, runtimeOpts);
 
         try {
@@ -208,6 +191,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
     });
 
     await standardEndpoints(router, accessAttemptsRoutes);
+    await standardEndpoints(router, configRoutes);
     await standardEndpoints(router, realmsRoutes);
     await standardEndpoints(router, sessionsRoutes);
 
@@ -233,9 +217,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
             serviceConfigDoc.close();
             await mongoClient.close();
         },
-        config() {
-            return config;
-        },
+        services,
         url: `http://localhost:${port}`
     };
 };
@@ -257,12 +239,17 @@ function errorMessage(e) {
 }
 
 function errorStack(e) {
-    const oldMessage = errorMessage(e);
+    const renderedMessage = errorMessage(e);
 
     const target = randomId(100);
+
+    const oldMessage = e.message;
     e.message = target;
 
-    return e.stack.replace(target, oldMessage);
+    const result = e.stack.replace(target, renderedMessage);
+    e.message = oldMessage;
+
+    return result;
 }
 
 async function loadConfig(uri) {

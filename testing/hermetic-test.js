@@ -18,12 +18,6 @@ const soul = require('../app');
 
 const { MongoClient } = require('mongodb');
 
-const rsaPrivateKeyPem = fs.readFileSync(
-        pathLib.join(__dirname, 'fixtures', 'rsa.priv.pem'), 'utf8');
-
-const rsaPublicKeyJwt = pemToJwk(fs.readFileSync(
-        pathLib.join(__dirname, 'fixtures', 'rsa.pub.pem'), 'utf8'));
-
 module.exports = (...args) => async t => {
     const fn = args.find(a => typeof a === 'function');
     const opts = args.find(a => typeof a === 'object') || {};
@@ -31,32 +25,6 @@ module.exports = (...args) => async t => {
     const testId = randomTestId();
 
     let config = {
-        jwks: {
-            'https://local.literal.key.com': {
-                literal: {
-                    keys: [
-                        {
-                            alg: 'HS256',
-                            k: crypto.randomBytes(32).toString('base64url'),
-                            kid: 'key1',
-                            kty: 'oct',
-                            use: 'sig'
-                        },
-                        {
-                            ...rsaPublicKeyJwt,
-
-                            alg: 'RS256',
-                            kid: 'key2',
-                            use: 'sig',
-
-                            // This just makes life easy on our signing
-                            // helper function function.
-                            cheatPrivateKey: rsaPrivateKeyPem
-                        }
-                    ]
-                }
-            }
-        },
         mongodb: {
             dbName: `testdb-${testId}`,
             uri: `mongodb://localhost:${process.env.MONGOD_PORT}`
@@ -94,16 +62,15 @@ module.exports = (...args) => async t => {
 
     async function buildJwt(issuer, alg, kid, payload) {
         if (!jwksClient) {
-            jwksClient = new JwksClient({
-                getData() { return server.config(); }
-            }, { nower });
+            jwksClient = new JwksClient(
+                    server.services.leylineSettings, { nower });
         }
 
         const jwk = await jwksClient.getJwk(issuer, alg, kid);
 
         const signingOpts = {
             algorithm: alg,
-            audience: server.config().audienceId,
+            audience: server.services.leylineSettings.getConfig().audienceId,
             keyid: kid
         };
 
@@ -143,6 +110,33 @@ module.exports = (...args) => async t => {
         server = await soul(
                 [`data:text/plain,${encodeURIComponent(CSON.stringify(config))}`],
                 runtimeDeps);
+
+        await axios.patch(`${server.url}/config/explicit`,
+                [{
+                    op: 'add',
+                    path: '/jwks',
+                    value: {
+                        'https://local.literal.key.com': {
+                            literal: {
+                                keys: [
+                                    {
+                                        alg: 'HS256',
+                                        k: crypto.randomBytes(32)
+                                                .toString('base64url'),
+                                        kid: 'key1',
+                                        kty: 'oct',
+                                        use: 'sig'
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }],
+                {
+                    headers: {
+                        'Content-Type': 'application/json-patch+json'
+                    }
+                });
 
         await fn(t, {
             baseHref: server.url,

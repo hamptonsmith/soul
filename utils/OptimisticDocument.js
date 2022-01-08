@@ -4,6 +4,11 @@ const clone = require('clone');
 const errors = require('../standard-errors');
 const deepequal = require('deepequal');
 const EventEmitter = require('events');
+const SbError = require('@shieldsbetter/sberror2');
+
+class VersionPreconditionFailed extends SbError {
+    static messageTemplate = 'Wanted version {{expected}}, but was: {{actual}}';
+}
 
 class OptimisticDocument extends EventEmitter {
     constructor(collection, documentId, documentContainer, runtimeDeps) {
@@ -27,7 +32,12 @@ class OptimisticDocument extends EventEmitter {
         return this.documentContainer.getData().data;
     }
 
-    async update(updateFn, onConflictFn = defaultOnConflictFn) {
+    getVersionNumber() {
+        return this.documentContainer.getData().version;
+    }
+
+    async update(
+            updateFn, onConflictFn = defaultOnConflictFn, expectedVersion) {
 
         let retry = true;
         let lastError;
@@ -41,6 +51,15 @@ class OptimisticDocument extends EventEmitter {
             if (currentVersion.version
                     !== this.documentContainer.getData().version) {
                 this.documentContainer.setData(currentVersion);
+            }
+
+            if (expectedVersion !== undefined
+                    && expectedVersion !==
+                            this.documentContainer.getData().version) {
+                throw new VersionPreconditionFailed({
+                    actual: this.documentContainer.getData(),
+                    expected: expectedVersion
+                });
             }
 
             const oldData = clone(currentVersion.data);
@@ -86,6 +105,8 @@ class OptimisticDocument extends EventEmitter {
         if (lastError) {
             throw errors.unexpectedError(lastError);
         }
+
+        return this.documentContainer.getData().data;
     }
 };
 
@@ -154,3 +175,5 @@ module.exports = async (collection, documentId,
 
     return doc;
 };
+
+module.exports.VersionPreconditionFailed = VersionPreconditionFailed;

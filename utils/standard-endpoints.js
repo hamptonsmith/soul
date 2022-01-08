@@ -20,6 +20,7 @@ module.exports = async (router, spec) => {
                 async (ctx, next) => {
                     await validate({
                         body: ctx.request.body,
+                        headers: ctx.request.headers,
                         params: ctx.params,
                         query: ctx.query
                     }, details.validator || (() => {}));

@@ -22,8 +22,8 @@ class NoSuchKey extends SbError {
 }
 
 module.exports = class JwksClient {
-    constructor(config, { nower }) {
-        this.config = config;
+    constructor(leylineSettings, { nower }) {
+        this.leylineSettings = leylineSettings;
         this.cache = new LRU({
             max: 100,
             maxAge: ms('24h'),
@@ -38,8 +38,8 @@ module.exports = class JwksClient {
             throw new UnfamiliarAuthority({ authority });
         }
 
-        const authorityConfig =
-                lodash.get(this.config.getData(), ['jwks', authority]);
+        const authorityConfig = lodash.get(
+                this.leylineSettings.getConfig(), ['jwks', authority]);
 
         if (!authorityConfig) {
             throw new UnfamiliarAuthority({ authority });
@@ -126,7 +126,7 @@ class ThrottledSlurpUri {
             }
         }
 
-        if (!result) {
+        if (!cacheEntry) {
             cacheEntry = {
                 data: JSON.parse(await slurpUri(uri, { encoding: 'utf8' })),
                 fetchedAt: this.nower()

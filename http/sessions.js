@@ -27,7 +27,7 @@ module.exports = {
             let after, docs;
             if (ctx.query.sessionToken) {
                 const decodedSessionTokens = tokens.decodeValid(
-                        [ctx.query.sessionToken], ctx.state.config);
+                        [ctx.query.sessionToken], ctx.state.serviceConfig);
 
                 if (Object.keys(decodedSessionTokens).length === 0) {
                     docs = [];
@@ -40,12 +40,13 @@ module.exports = {
                         '/realmId': '/path/realmId',
                         '/sessionId': '/querystring/sessionToken',
                         '/agentFingerprint': '/querystring/agentFingerprint'
-                    }, () => ctx.services.sessions.validateSessionCredentials(
-                                ctx.params.realmId,
-                                sessionId,
-                                credentialList,
-                                ctx.query.agentFingerprint,
-                                ctx.state.config));
+                    }, () => ctx.state.services.sessions
+                            .validateSessionCredentials(
+                                    ctx.params.realmId,
+                                    sessionId,
+                                    credentialList,
+                                    ctx.query.agentFingerprint,
+                                    ctx.state.serviceConfig));
 
                     docs = [session];
                 }
@@ -54,7 +55,7 @@ module.exports = {
                 ({ after, docs } = await httpUtils.remapValidationErrorPaths({
                     '/after': '/querystring/after',
                     '/limit': '/querystring/limit'
-                }, () => ctx.services.realms.byCreationTime.find(
+                }, () => ctx.state.services.realms.byCreationTime.find(
                             { realmId: ctx.params.realmId },
                             ctx.query.after,
                             ctx.query.limit !== undefined
@@ -131,7 +132,7 @@ var sessionMechanisms = {
     },
     idToken: async ctx => {
         const jwtPayload =
-                await ctx.services.jwts.verify(ctx.request.body.token);
+                await ctx.state.services.jwts.verify(ctx.request.body.token);
 
         const { status, body } = await jwtPayloadToSessionResult(
                 jwtPayload, ctx, {
@@ -148,16 +149,16 @@ var sessionMechanisms = {
 
 async function jwtPayloadToSessionResult(jwtPayload, ctx, errorPathMapping) {
     const session = await httpUtils.remapValidationErrorPaths(errorPathMapping,
-            () => ctx.services.sessions.create(
+            () => ctx.state.services.sessions.create(
                     ctx.params.realmId,
                     ctx.request.body.securityContext,
                     jwtPayload,
                     ctx.request.body.agentFingerprint,
                     JSON.stringify([jwtPayload.iss, jwtPayload.sub]),
-                    ctx.state.config));
+                    ctx.state.serviceConfig));
 
-    const token =
-            tokens.encode(session.id, session.eraCredentials, ctx.state.config);
+    const token = tokens.encode(
+            session.id, session.eraCredentials, ctx.state.serviceConfig);
     const body = {
         addTokens: [ token ],
         retireTokens: []

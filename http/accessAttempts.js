@@ -21,7 +21,7 @@ module.exports = {
         }),
         handler: async (ctx, next) => {
             const decodedTokens = tokens.decodeValid(
-                    ctx.request.body.sessionTokens, ctx.state.config);
+                    ctx.request.body.sessionTokens, ctx.state.serviceConfig);
 
             let session;
             let error;
@@ -49,11 +49,13 @@ module.exports = {
                     '/sessionId': '/body/sessionTokens',
                     '/agentFingerprint': '/body/agentFingerprint'
                 }, async () => {
-                    session = await ctx.services.sessions.validateSessionCredentials(
-                            ctx.params.realmId,
-                            ctx.request.body.securityContext, sessionId,
-                            credentialsList, ctx.params.agentFingerprint,
-                            ctx.state.config);
+                    session = await ctx.state.services.sessions
+                            .validateSessionCredentials(
+                                    ctx.params.realmId,
+                                    ctx.request.body.securityContext, sessionId,
+                                    credentialsList,
+                                    ctx.params.agentFingerprint,
+                                    ctx.state.serviceConfig);
                 });
             }
             catch (e) {
@@ -82,17 +84,20 @@ module.exports = {
                 const addTokens = [];
 
                 if (session.nextEraCredentials) {
-                    addTokens.push(tokens.encode(session.id,
-                            session.nextEraCredentials, ctx.state.config));
+                    addTokens.push(tokens.encode(
+                            session.id,
+                            session.nextEraCredentials,
+                            ctx.state.serviceConfig));
                 }
 
                 const retireTokens = session.retireCredentials.map(c =>
-                        tokens.encode(session.id, c, ctx.state.config));
+                        tokens.encode(session.id, c, ctx.state.serviceConfig));
 
                 ctx.body.session = {
                     addTokens,
                     retireTokens: session.retireCredentials.map(c =>
-                            tokens.encode(session.id, c, ctx.state.config)),
+                            tokens.encode(
+                                    session.id, c, ctx.state.serviceConfig))
                 };
 
                 httpUtils.copySessionFields(session, ctx.body.session, ctx);

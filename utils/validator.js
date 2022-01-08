@@ -8,10 +8,11 @@ class ValidationError extends Error {
     code = 'VALIDATION_ERROR';
     path = [];
 
-    constructor(msg, actual) {
+    constructor(msg, actual, cause) {
         super(msg);
 
         this.actualValue = actual;
+        this.cause = cause;
     }
 }
 
@@ -66,7 +67,8 @@ class ValidationContext {
         this.state = {
             additionalSchemas: [],
             hierarchyGlobalSchemas: [],
-            globalSchemas: [ ...this.hierarchyGlobalSchemas ]
+            globalSchemas: [ ...this.hierarchyGlobalSchemas ],
+            unknownFieldSchemas: []
         };
 
         Object.assign(this, this.state);
@@ -230,6 +232,11 @@ const numberOpts = {
 };
 
 const stringOpts = {
+    literal: (literal, str) => {
+        if (str !== literal) {
+            throw new ValidationEror(`not ${JSON.stringify(literal)}`);
+        }
+    },
     maxLength: (max, str) => {
         if (str.length > max) {
             throw new ValidationError(`greater than ${max} characters`,
@@ -278,6 +285,13 @@ var defaultChecker = {
             }
         };
     },
+    defined() {
+        return actual => {
+            if (actual === undefined) {
+                throw new ValidationError('undefined');
+            }
+        };
+    },
     invalid(message) {
         return (check, actual) => {
             throw new ValidationError(message, actual)
@@ -300,7 +314,9 @@ var defaultChecker = {
                 throw new ValidationError('not an object', actual);
             }
 
-            check.appendSchema(shape);
+            if (shape !== undefined) {
+                check.appendSchema(shape);
+            }
 
             if (opts.unknownEntries) {
                 check.appendUnknownFieldSchemas(opts.unknownEntries);
@@ -315,6 +331,10 @@ var defaultChecker = {
         };
     },
     string(opts = {}) {
+        if (typeof opts === 'string') {
+            opts = { literal: opts };
+        }
+
         return async (check, actual) => {
             if (typeof actual !== 'string') {
                 throw new ValidationError('not an string', actual);

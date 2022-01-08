@@ -223,6 +223,21 @@ test('hierarchy global schemas', async t => {
     }, check => ({ bar: schema })), { instanceOf: validator.ValidationError });
 });
 
+test('unknownEntries only applies at the current level', async t => {
+    await validator({
+        foo: {
+            bar: 'something'
+        }
+    }, check => check.object({}, {
+        unknownEntries: {
+            key: check.string(),
+            value: check.object()
+        }
+    }));
+
+    t.pass();
+});
+
 test('invalid schemas', async t => {
     await t.throwsAsync(() => validator(null, 5), { message: /valid schema/ });
     await t.throwsAsync(
