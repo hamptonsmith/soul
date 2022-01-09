@@ -5,9 +5,11 @@
 // `get-jwks` doesn't have rate limiting of requests and uses some global
 // options that make it challenging to set up different authorities differently.
 
+const assert = require('assert');
 const jwkToPem = require('jwk-to-pem');
 const lodash = require('lodash');
 const LRU = require('lru-cache');
+const MetricsService = require('../services/MetricsService');
 const ms = require('ms');
 const SbError = require('@shieldsbetter/sberror2');
 const slurpUri = require('@shieldsbetter/slurp-uri');
@@ -17,19 +19,20 @@ class UnfamiliarAuthority extends SbError {
 }
 
 class NoSuchKey extends SbError {
-    static messageTemplate = 'No key with algorithm {{algorithm}} and id '
-            + '{{kid}} for authority {{authority}}.'
+    static messageTemplate = 'No key with algorithm {{{algorithm}}} and id '
+            + '{{{kid}}} for authority {{{authority}}}.'
 }
 
 module.exports = class JwksClient {
-    constructor(leylineSettings, { nower }) {
-        this.leylineSettings = leylineSettings;
+    constructor(leylineSettings, metrics = new MetricsService(), { nower }) {
         this.cache = new LRU({
             max: 100,
             maxAge: ms('24h'),
             updateAgeOnGet: true
         });
-        this.throttledSlurpUri = new ThrottledSlurpUri(nower);
+        this.leylineSettings = leylineSettings;
+        this.metrics = metrics;
+        this.throttledSlurpUri = new ThrottledSlurpUri(metrics, nower);
     }
 
     async getJwks(authority) {
@@ -45,18 +48,16 @@ module.exports = class JwksClient {
             throw new UnfamiliarAuthority({ authority });
         }
 
+        // Getting into this state should be forbidden by `POST /config`...
+        assert(!!authorityConfig.uri || !!authorityConfig.literal);
+
         let jwks;
         if (authorityConfig.uri) {
             jwks = await this.throttledSlurpUri.slurpUri(
                     authorityConfig.uri);
         }
-        else if (authorityConfig.literal) {
-            jwks = authorityConfig.literal;
-        }
         else {
-            throw new UnfamiliarAuthority({ authority },
-                    new Error(`config.jwks["${authority}"] is misconfigured. `
-                            + `Must have field \`uri\` or \`literal\`.`));
+            jwks = authorityConfig.literal;
         }
 
         return jwks;
@@ -70,6 +71,9 @@ module.exports = class JwksClient {
             jwk = this.cache.get(cacheKey);
         }
         else {
+            this.metrics.increment('jwkCacheMiss', 1);
+            this.metrics.increment(`jwkCacheMiss ${authority}`, 1);
+
             const jwks = await this.getJwks(authority);
 
             jwk = jwks.keys.find(key =>
@@ -113,27 +117,31 @@ module.exports = class JwksClient {
 class ThrottledSlurpUri {
     cachedResults = {};
 
-    constructor(nower) {
+    constructor(metrics, nower) {
+        this.metrics = metrics;
         this.nower = nower;
     }
 
     async slurpUri(uri) {
         let cacheEntry;
 
-        if (cachedResults[uri]) {
-            if (cachedResult[uri].fetchedAt + ms('30s') >= this.nower()) {
-                cacheEntry = cachedResult[uri];
+        if (this.cachedResults[uri]) {
+            if (this.cachedResults[uri].fetchedAt + ms('30s') >= this.nower()) {
+                cacheEntry = this.cachedResults[uri];
             }
         }
 
         if (!cacheEntry) {
+            this.metrics.increment('issuerJwksRefresh', 1);
+            this.metrics.increment(`issuerJwksRefresh ${uri}`, 1);
+
             cacheEntry = {
                 data: JSON.parse(await slurpUri(uri, { encoding: 'utf8' })),
                 fetchedAt: this.nower()
             };
         }
 
-        cachedResults[uri] = cacheEntry;
+        this.cachedResults[uri] = cacheEntry;
 
         return cacheEntry.data;
     }

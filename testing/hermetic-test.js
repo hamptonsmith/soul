@@ -63,7 +63,7 @@ module.exports = (...args) => async t => {
     async function buildJwt(issuer, alg, kid, payload) {
         if (!jwksClient) {
             jwksClient = new JwksClient(
-                    server.services.leylineSettings, { nower });
+                    server.services.leylineSettings, undefined, { nower });
         }
 
         const jwk = await jwksClient.getJwk(issuer, alg, kid);
@@ -202,7 +202,7 @@ function fakeNower() {
     let now = new Date('2020-01-01T12:00:00Z').valueOf();
 
     const nower = () => now;
-    nower.advance = t => now = new Date(now.valueOf() + ms(t));
+    nower.advance = t => now = new Date(now.valueOf() + ms(t)).valueOf();
     nower.setNow = n => now = n;
 
     return nower;

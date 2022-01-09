@@ -1,6 +1,7 @@
 'use strict';
 
 const bs58 = require('bs58');
+const crypto = require('crypto');
 const defaultConfig = require('../../default-service-config');
 const fs = require('fs');
 const hermeticTest = require('../hermetic-test');
@@ -105,6 +106,59 @@ test('rsa key', hermeticTest(
         token: await buildJwt(
                 'https://local.literal.key.com',
                 'RS256', 'key2', {
+                    sub: 'testuser1'
+                })
+    });
+
+    const { data: accessAttemptData } = await soul.post(
+            `/realms/${realmId}/accessAttempts`,
+            {
+                securityContext: 'authenticated:0',
+                sessionTokens: sessionData.addTokens
+            });
+
+    t.is(accessAttemptData.resolution, 'valid');
+}));
+
+test('uri jwks', hermeticTest(
+        async (t, { buildJwt, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    await soul.patch('/config/explicit', [
+        {
+            op: 'add',
+            path: jsonpointer.compile([ 'jwks', 'https://uri.key.com' ]),
+            value: {
+                uri: 'data:application/json,'
+                        + encodeURIComponent(JSON.stringify({
+                            keys: [
+                                {
+                                    alg: 'HS256',
+                                    k: crypto.randomBytes(32)
+                                            .toString('base64url'),
+                                    kid: 'key1',
+                                    kty: 'oct',
+                                    use: 'sig'
+                                }
+                            ]
+                        }))
+            }
+        }
+    ],
+    {
+        headers: {
+            'Content-Type': 'application/json-patch+json'
+        }
+    });
+
+    const { data: sessionData } = await soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'idToken',
+        securityContext: 'authenticated',
+        token: await buildJwt(
+                'https://uri.key.com',
+                'HS256', 'key1', {
                     sub: 'testuser1'
                 })
     });

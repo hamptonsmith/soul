@@ -20,12 +20,16 @@ module.exports = {
     },
     'GET /config/derived': {
         handler: async (ctx, next) => {
+            ctx.set('ETag', '' + ctx.state.services.leylineSettings
+                    .getExplicitConfigVersionNumber());
             ctx.status = 200;
             ctx.body = ctx.state.serviceConfig;
         }
     },
     'GET /config/explicit': {
         handler: async (ctx, next) => {
+            ctx.set('ETag', '' + ctx.state.services.leylineSettings
+                    .getExplicitConfigVersionNumber());
             ctx.status = 200;
             ctx.body = ctx.state.services.leylineSettings.getExplicitConfig();
         }
@@ -50,7 +54,7 @@ module.exports = {
                     await validateServiceConfig(currentConfig);
                 },
                 undefined,
-                saneParseInt(ctx.get('If-Match'))
+                desiredVersion(ctx.get('If-Match'))
             );
 
             ctx.status = 200;
@@ -58,3 +62,17 @@ module.exports = {
         }
     }
 };
+
+function desiredVersion(ifMatch) {
+    if (ifMatch === '') {
+        return undefined;
+    }
+
+    const parsedIfMatch = saneParseInt(ifMatch);
+
+    if (parsedIfMatch === undefined) {
+        return -1;
+    }
+
+    return parsedIfMatch;
+}

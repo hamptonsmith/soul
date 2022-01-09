@@ -232,11 +232,6 @@ const numberOpts = {
 };
 
 const stringOpts = {
-    literal: (literal, str) => {
-        if (str !== literal) {
-            throw new ValidationEror(`not ${JSON.stringify(literal)}`);
-        }
-    },
     maxLength: (max, str) => {
         if (str.length > max) {
             throw new ValidationError(`greater than ${max} characters`,
@@ -286,7 +281,7 @@ var defaultChecker = {
         };
     },
     defined() {
-        return actual => {
+        return (check, actual) => {
             if (actual === undefined) {
                 throw new ValidationError('undefined');
             }
@@ -331,10 +326,6 @@ var defaultChecker = {
         };
     },
     string(opts = {}) {
-        if (typeof opts === 'string') {
-            opts = { literal: opts };
-        }
-
         return async (check, actual) => {
             if (typeof actual !== 'string') {
                 throw new ValidationError('not an string', actual);

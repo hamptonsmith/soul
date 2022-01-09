@@ -57,7 +57,7 @@ class OptimisticDocument extends EventEmitter {
                     && expectedVersion !==
                             this.documentContainer.getData().version) {
                 throw new VersionPreconditionFailed({
-                    actual: this.documentContainer.getData(),
+                    actual: this.documentContainer.getData().version,
                     expected: expectedVersion
                 });
             }

@@ -12,7 +12,7 @@ module.exports = class LeylineSettingsService {
     }
 
     getExplicitConfigVersionNumber() {
-        return this.configDoc.getData();
+        return this.configDoc.getVersionNumber();
     }
 
     getConfig() {

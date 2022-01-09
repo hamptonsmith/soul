@@ -16,6 +16,8 @@ const JwtsService = require('./services/jwts');
 const Koa = require('koa');
 const LeylineSettingsService = require('./services/LeylineSettingsService');
 const lodash = require('lodash');
+const metricsRoutes = require('./http/metrics');
+const MetricsService = require('./services/MetricsService');
 const Mustache = require('mustache');
 const optimisticDocument = require('./utils/OptimisticDocument');
 const realmsRoutes = require('./http/realms');
@@ -44,7 +46,8 @@ const publicErrors = {
     NO_SUCH_REALM: 404,
     UNACCEPTABLE_JWT: 401,
     UNFAMILIAR_AUTHORITY: 401,
-    VALIDATION_ERROR: 500
+    VALIDATION_ERROR: 500,
+    VERSION_PRECONDITION_FAILED: 412
 };
 
 module.exports = async (argv, runtimeOpts = {}) => {
@@ -83,9 +86,10 @@ module.exports = async (argv, runtimeOpts = {}) => {
 
     const jsonata = new JsonataService(runtimeOpts);
     const leylineSettings = new LeylineSettingsService(serviceConfigDoc);
+    const metrics = new MetricsService();
     const realms = new RealmsService(dbClient, runtimeOpts);
 
-    const jwts = new JwtsService(leylineSettings, runtimeOpts);
+    const jwts = new JwtsService(leylineSettings, metrics, runtimeOpts);
     const sessions =
             new SessionsService(dbClient, jsonata, realms, runtimeOpts);
 
@@ -94,6 +98,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
         jsonata,
         jwts,
         leylineSettings,
+        metrics,
         realms,
         sessions
     };
@@ -192,6 +197,7 @@ module.exports = async (argv, runtimeOpts = {}) => {
 
     await standardEndpoints(router, accessAttemptsRoutes);
     await standardEndpoints(router, configRoutes);
+    await standardEndpoints(router, metricsRoutes);
     await standardEndpoints(router, realmsRoutes);
     await standardEndpoints(router, sessionsRoutes);
 
