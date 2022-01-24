@@ -1,6 +1,7 @@
 'use strict';
 
 const bodyParser = require('koa-bodyparser');
+const httpUtils = require('./http-utils');
 
 module.exports = {
     'GET /realms': {
@@ -18,11 +19,7 @@ module.exports = {
                 continueToken: after,
                 continueLink: after ? `${ctx.state.baseHref}/realms`
                         + `?after=${after}&limit=${docs.length}` : undefined,
-                resources: docs.map(d => ({
-                    href: `${ctx.state.baseHref}/realms/${d.id}`,
-
-                    ...d
-                }))
+                resources: docs.map(d => httpUtils.realmReturnDoc(d, ctx))
             };
         }
     },
@@ -32,10 +29,7 @@ module.exports = {
                     ctx.params.realmId);
 
             ctx.status = 200;
-            ctx.body = {
-                href: `${ctx.state.baseHref}/realms/${realm.id}`,
-                ...realm
-            };
+            ctx.body = httpUtils.realmReturnDoc(realm, ctx);
         }
     },
     'POST /realms': {
@@ -55,13 +49,12 @@ module.exports = {
 
             const doc = await ctx.state.services.realms.create(
                     friendlyName, securityContexts);
-            doc.href = `${ctx.state.baseHref}/realms/${doc.id}`;
 
             ctx.response.set('Location', doc.href);
             ctx.response.set('Content-Location', doc.href);
 
             ctx.status = 201;
-            ctx.body = doc;
+            ctx.body = httpUtils.realmReturnDoc(doc, ctx);
         }
     }
 };

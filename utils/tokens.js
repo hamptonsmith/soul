@@ -6,11 +6,12 @@ const crypto = require('crypto');
 const util = require('util');
 
 module.exports = {
-    encode: (sessionId, eraCredentials, config) => {
+    encode: (realmId, sessionId, eraCredentials, config) => {
         const tokenData = Buffer.from(JSON.stringify({
             eraNumber: eraCredentials.eraNumber,
+            realmId,
             securityContext: eraCredentials.securityContext,
-            sessionId: sessionId,
+            sessionId,
             tokenId: eraCredentials.tokenId
         }), 'utf8');
 
@@ -30,7 +31,7 @@ module.exports = {
     // containing valid tokens mapped to their parent sessions. We presume this
     // is coming straight from the user's cookies, so we don't bomb on a bad
     // token. A bad token is just not a token intended for us apparently.
-    decodeValid: (tokenStrs, config) => {
+    decodeValid: (realmId, securityContext, tokenStrs, config) => {
         const result = {};
 
         for (const tokenStr of tokenStrs) {
@@ -55,6 +56,11 @@ module.exports = {
 
                 const tokenData = JSON.parse(dataBuf.toString('utf8'));
 
+                if (tokenData.realmId !== realmId
+                        || tokenData.securityContext !== securityContext) {
+                    continue;
+                }
+
                 const sessionId = tokenData.sessionId;
                 delete tokenData.sessionId;
 
@@ -62,7 +68,8 @@ module.exports = {
                     result[sessionId] = { tokens: [] };
                 }
 
-                result[sessionId].tokens.push(tokenData);
+                result[sessionId].tokens.push(
+                        { ...tokenData, originalToken: tokenStr, sessionId });
             }
             catch (e) { }
         }

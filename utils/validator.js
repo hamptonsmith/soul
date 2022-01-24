@@ -246,7 +246,7 @@ const stringOpts = {
     },
     regexp: (r, str) => {
         if (!r.test(str)) {
-            throw new ValidationError(`doesn't match regexp: ${r.source}`);
+            throw new ValidationError(`doesn't match regexp: ${r.source}`, str);
         }
     }
 };

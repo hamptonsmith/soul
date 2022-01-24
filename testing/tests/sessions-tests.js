@@ -34,13 +34,14 @@ test('dev mechanism', hermeticTest(
     });
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: sessionData.addTokens
             });
 
-    t.is(accessAttemptData.resolution, 'valid');
+    t.deepEqual(
+            accessAttemptData.sessions.map(s => s.id),
+            [sessionData.sessions[0].id]);
 }));
 
 test('idToken mechanism', hermeticTest(
@@ -60,13 +61,14 @@ test('idToken mechanism', hermeticTest(
     });
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: sessionData.addTokens
             });
 
-    t.is(accessAttemptData.resolution, 'valid');
+    t.deepEqual(
+            accessAttemptData.sessions.map(s => s.id),
+            [sessionData.sessions[0].id]);
 }));
 
 test('rsa key', hermeticTest(
@@ -111,13 +113,14 @@ test('rsa key', hermeticTest(
     });
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: sessionData.addTokens
             });
 
-    t.is(accessAttemptData.resolution, 'valid');
+    t.deepEqual(
+            accessAttemptData.sessions.map(s => s.id),
+            [sessionData.sessions[0].id]);
 }));
 
 test('uri jwks', hermeticTest(
@@ -164,16 +167,17 @@ test('uri jwks', hermeticTest(
     });
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: sessionData.addTokens
             });
 
-    t.is(accessAttemptData.resolution, 'valid');
+    t.deepEqual(
+            accessAttemptData.sessions.map(s => s.id),
+            [sessionData.sessions[0].id]);
 }));
 
-test('issuer w/ suspicious name', hermeticTest(
+test('issuer w/ malicious name', hermeticTest(
         async (t, { buildJwt, soul, nower }) => {
 
     const { data: { id: realmId }} = await soul.post('/realms');
@@ -301,16 +305,69 @@ test('sessions expire', hermeticTest(
     nower.advance('1s');
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: sessionData.addTokens
             });
 
-    t.deepEqual(accessAttemptData, {
-        resolution: 'invalid-no-prejudice',
-        relog: true
+    t.is(accessAttemptData.sessions.length, 0);
+    t.deepEqual(accessAttemptData.retireTokens, sessionData.addTokens);
+}));
+
+test('security contexts can have absolute expirations', hermeticTest(
+        async (t, { soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const { data: sessionData } = await soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'dev',
+        securityContext: 'secure',
+        jwtPayload: {
+            iat: nower(),
+            iss: 'http://me.com',
+            sub: 'user123'
+        }
     });
+
+    nower.advance(defaultConfig.defaultRealmSecurityContexts.secure
+            .sessionOptions.absoluteExpirationDuration);
+    nower.advance('1s');
+
+    const { data: accessAttemptData } = await soul.post(
+            `/realms/${realmId}/securityContexts/secure/accessAttempts`,
+            {
+                sessionTokens: sessionData.addTokens
+            });
+
+    t.is(accessAttemptData.sessions.length, 0);
+    t.deepEqual(accessAttemptData.retireTokens, sessionData.addTokens);
+}));
+
+test('valid credentials but wrong context', hermeticTest(
+        async (t, { soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const { data: sessionData } = await soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'dev',
+        securityContext: 'secure',
+        jwtPayload: {
+            iat: nower(),
+            iss: 'http://me.com',
+            sub: 'user123'
+        }
+    });
+
+    const { data: accessAttemptData } = await soul.post(
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
+            {
+                sessionTokens: sessionData.addTokens
+            });
+
+    t.is(accessAttemptData.sessions.length, 0);
+    t.deepEqual(accessAttemptData.retireTokens, []);
 }));
 
 test('token w/ unknown protocol', hermeticTest(
@@ -319,13 +376,13 @@ test('token w/ unknown protocol', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: [bs58.encode(Buffer.from([1]))]
             });
 
-    t.is(accessAttemptData.resolution, 'invalid-no-prejudice');
+    t.is(accessAttemptData.sessions.length, 0);
+    t.deepEqual(accessAttemptData.retireTokens, []);
 }));
 
 test('token w/ bad signature', hermeticTest(
@@ -334,9 +391,8 @@ test('token w/ bad signature', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: [
                     // This buffer is full of zeros and thus it has the right
                     // protocol (0), but a nonsense signature (all zeroes) for
@@ -345,7 +401,8 @@ test('token w/ bad signature', hermeticTest(
                 ]
             });
 
-    t.is(accessAttemptData.resolution, 'invalid-no-prejudice');
+    t.is(accessAttemptData.sessions.length, 0);
+    t.deepEqual(accessAttemptData.retireTokens, []);
 }));
 
 test('bad token encoding ignores token', hermeticTest(
@@ -354,16 +411,16 @@ test('bad token encoding ignores token', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
-                securityContext: 'authenticated:0',
                 sessionTokens: [
                     // This isn't base58!
                     '!@#$%^&*'
                 ]
             });
 
-    t.is(accessAttemptData.resolution, 'invalid-no-prejudice');
+    t.is(accessAttemptData.sessions.length, 0);
+    t.deepEqual(accessAttemptData.retireTokens, []);
 }));
 
 test('same agent fingerprint succeeds', hermeticTest(
@@ -373,6 +430,7 @@ test('same agent fingerprint succeeds', hermeticTest(
 
     const { data: sessionData } = await soul.post(
             `/realms/${realmId}/sessions`, {
+        agentFingerprint: 'abcdef',
         mechanism: 'dev',
         securityContext: 'authenticated',
         jwtPayload: {
@@ -382,23 +440,16 @@ test('same agent fingerprint succeeds', hermeticTest(
         }
     });
 
-    await soul.post(
-            `/realms/${realmId}/accessAttempts`,
-            {
-                agentFingerprint: 'abcdef',
-                securityContext: 'authenticated:0',
-                sessionTokens: sessionData.addTokens
-            });
-
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
                 agentFingerprint: 'abcdef',
-                securityContext: 'authenticated:0',
                 sessionTokens: sessionData.addTokens
             });
 
-    t.is(accessAttemptData.resolution, 'valid');
+    t.deepEqual(
+            accessAttemptData.sessions.map(s => s.id),
+            [sessionData.sessions[0].id]);
 }));
 
 test('different agent fingerprint invalidates session w/ prejudice',
@@ -419,12 +470,15 @@ test('different agent fingerprint invalidates session w/ prejudice',
     });
 
     const { data: accessAttemptData } = await soul.post(
-            `/realms/${realmId}/accessAttempts`,
+            `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
             {
                 agentFingerprint: 'uvwxyz',
-                securityContext: 'authenticated:0',
                 sessionTokens: sessionData.addTokens
             });
 
-    t.is(accessAttemptData.resolution, 'invalid-with-prejudice');
+    t.is(accessAttemptData.sessions.length, 0);
+    t.deepEqual(accessAttemptData.retireTokens, sessionData.addTokens);
+    t.deepEqual(accessAttemptData.suspiciousTokens, sessionData.addTokens);
+    t.deepEqual(accessAttemptData.suspiciousSessionIds,
+            [sessionData.sessions[0].id]);
 }));

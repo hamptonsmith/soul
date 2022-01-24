@@ -14,77 +14,6 @@ class UnknownMechanism extends SbError {
 }
 
 module.exports = {
-    'GET /realms/:realmId/sessions': {
-        validator: {
-            query: {
-                sessionToken: check => check.optional(check.string({
-                    minLength: 1,
-                    maxLength: 500
-                }))
-            }
-        },
-        handler: async (ctx, next) => {
-            let after, docs;
-            if (ctx.query.sessionToken) {
-                const decodedSessionTokens = tokens.decodeValid(
-                        [ctx.query.sessionToken], ctx.state.serviceConfig);
-
-                if (Object.keys(decodedSessionTokens).length === 0) {
-                    docs = [];
-                }
-                else {
-                    const sessionId = Object.keys(decodedTokens)[0];
-                    const { tokens: credentialList } = decodedTokens[sessionId];
-
-                    const session = await httpUtils.remapValidationErrorPaths({
-                        '/realmId': '/path/realmId',
-                        '/sessionId': '/querystring/sessionToken',
-                        '/agentFingerprint': '/querystring/agentFingerprint'
-                    }, () => ctx.state.services.sessions
-                            .validateSessionCredentials(
-                                    ctx.params.realmId,
-                                    sessionId,
-                                    credentialList,
-                                    ctx.query.agentFingerprint,
-                                    ctx.state.serviceConfig));
-
-                    docs = [session];
-                }
-            }
-            else {
-                ({ after, docs } = await httpUtils.remapValidationErrorPaths({
-                    '/after': '/querystring/after',
-                    '/limit': '/querystring/limit'
-                }, () => ctx.state.services.realms.byCreationTime.find(
-                            { realmId: ctx.params.realmId },
-                            ctx.query.after,
-                            ctx.query.limit !== undefined
-                                    ? Number.parseInt(ctx.query.limit)
-                                    : undefined)));
-            }
-
-            ctx.status = 200;
-            ctx.body = {
-                continueToken: after,
-                continueLink: after ? `${ctx.state.baseHref}`
-                        + `/realms/${ctx.params.realmId}/sessions`
-                        + `?after=${after}&limit=${docs.length}` : undefined,
-                resources: docs.map(d => ({
-                    href: `${ctx.state.baseHref}`
-                            + `/realms/${ctx.params.realmId}`
-                            + `/sessions/${d.id}`,
-
-                    createdAt: d.createdAt,
-                    currentGenerationCreatedAt: d.currentGenerationCreatedAt,
-                    currentGenerationNumber: d.currentGenerationNumber,
-                    lastUsedAt: d.lastUsedAt,
-                    id: d.id,
-                    realmId: d.realmId,
-                    subjectId: d.subjectId
-                }))
-            };
-        }
-    },
     'POST /realms/:realmId/sessions': {
         bodyparser: {},
         validator: check => ({
@@ -157,14 +86,15 @@ async function jwtPayloadToSessionResult(jwtPayload, ctx, errorPathMapping) {
                     JSON.stringify([jwtPayload.iss, jwtPayload.sub]),
                     ctx.state.serviceConfig));
 
-    const token = tokens.encode(
-            session.id, session.eraCredentials, ctx.state.serviceConfig);
+    const token = tokens.encode(ctx.params.realmId, session.id,
+            session.eraCredentials, ctx.state.serviceConfig);
     const body = {
         addTokens: [ token ],
-        retireTokens: []
+        retireTokens: [],
+        sessions: [
+            httpUtils.copySessionFields(session, ctx)
+        ]
     };
-
-    httpUtils.copySessionFields(session, body, ctx);
 
     return {
         status: 201,

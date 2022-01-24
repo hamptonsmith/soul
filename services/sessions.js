@@ -1,13 +1,17 @@
 'use strict';
 
+const assert = require('assert');
 const bs58 = require('bs58');
 const crypto = require('crypto');
+const deepequal = require('deepequal');
 const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
+const lodash = require('lodash');
 const ms = require('ms');
 const PageableCollectionOrder = require('../utils/PageableCollectionOrder');
 const RealmsService = require('./realms');
 const SbError = require('@shieldsbetter/sberror2');
+const tokensLib = require('../utils/tokens');
 const validate = require('../utils/soul-validate');
 
 const { DateTime } = require('luxon');
@@ -15,13 +19,14 @@ const { DateTime } = require('luxon');
 module.exports = class SessionsService {
     static idPrefix = 'sid';
 
-    constructor(dbClient, jsonataService, realmsService,
+    constructor(dbClient, jsonataService, leylineSettingsService, realmsService,
             { doBestEffort, nower }) {
 
         this.doBestEffort = doBestEffort;
         this.mongoCollection = dbClient.collection('Sessions');
         this.nower = nower;
         this.jsonata = jsonataService;
+        this.leylineSettings = leylineSettingsService;
         this.realms = realmsService;
 
         this.byCreationTime = new PageableCollectionOrder(
@@ -37,28 +42,50 @@ module.exports = class SessionsService {
     }
 
     async create(realmId, securityContextName, /* nullable */ idTokenClaims,
-            /* nullable */ agentFingerprint, /* nullable */ subjectId, config) {
+            /* nullable */ agentFingerprint) {
         await validate({
             realmId,
             securityContextName,
-            agentFingerprint,
-            subjectId
+            idTokenClaims,
+            agentFingerprint
         }, check => ({
             realmId: check.soulId(RealmsService.idPrefix),
             securityContextName: check.securityContextName(),
-            agentFingerprint: check.optional(check.agentFingerprint()),
-            subjectId: check.optional(
-                    check.string({ minLength: 1, maxLength: 200 }))
+            idTokenClaims: (check, actual) => {
+                if (JSON.stringify(idTokenClaims || null).length > 2000) {
+                    throw new check.ValidationError('Id token\'s claims must '
+                            + 'serialize to JSON shorter than 2000 characters, '
+                            + 'but length was: '
+                            + JSON.stringify(idTokens || null).length,
+                            actual);
+                }
+            },
+            agentFingerprint: check.optional(check.agentFingerprint())
         }));
 
         const realm = await this.realms.fetchById(realmId);
 
-        const securityContextDefinition = await getSatisfiableSecurityContext(
-                this, realm, securityContextName, idTokenClaims || {});
+        const securityContextDefinition =
+                lodash.get(realm, ['securityContexts', securityContextName]);
+
+        if (!securityContextDefinition) {
+            throw errors.noSuchSecurityContext(realmId, securityContextName);
+        }
+
+        const preconditionMemo = await claimsMeetPrecondition.call(this,
+                realm, securityContextDefinition, idTokenClaims);
+
+        if (!preconditionMemo) {
+            throw errors.invalidCredentials({
+                reason: `claims failed precondition for security context
+                        "${securityContextName}"`
+            });
+        }
 
         const governingPeriodLength = ms(
                 realm.governingPeriodLength
-                || config.defaultSessionGoverningPeriodLength);
+                || this.leylineSettings.getConfig()
+                    .defaultSessionGoverningPeriodLength);
 
         const id = generateId(SessionsService.idPrefix);
         const now = new Date(this.nower());
@@ -73,18 +100,20 @@ module.exports = class SessionsService {
             currentEraNumber: 0,
             governingPeriodLength,
             id: id,
-            idTokenClaims,
-            inactivityExpirationDuration:
-                    securityContextDefinition.inactivityExpirationDuration,
+            idTokenClaims: JSON.stringify(idTokenClaims),
+            inactivityExpirationDuration: securityContextDefinition
+                    .sessionOptions.inactivityExpirationDuration,
             lastUsedAt: now,
+            preconditionMemo,
             realmId,
-            securityContext: securityContextDefinition.id,
-            subjectId
+            securityContext: securityContextName
         };
 
-        if (securityContextDefinition.absoluteExpirationDuration) {
+        if (securityContextDefinition
+                .sessionOptions.absoluteExpirationDuration) {
             session.expiresAt = new Date(now.valueOf()
-                    + securityContextDefinition.absoluteExpirationDuration);
+                    + ms(securityContextDefinition
+                            .sessionOptions.absoluteExpirationDuration));
         }
 
         await this.mongoCollection.insertOne(toMongoDoc(session));
@@ -111,215 +140,136 @@ module.exports = class SessionsService {
                 });
     }
 
-    async validateSessionCredentials(realmId, expectedSecurityContext,
-            sessionId, credentials, agentFingerprint, config) {
+    async recordLineActivityAndReturnSessions(realmId, desiredSecurityContext,
+            tokens, /* nullable */ agentFingerprint) {
         await validate({
             realmId,
-            expectedSecurityContext,
-            sessionId,
+            desiredSecurityContext,
+            tokens,
             agentFingerprint
         }, check => ({
             realmId: check.soulId(RealmsService.idPrefix),
-            expectedSecurityContext: check.versionedSecurityContextName(),
-            sessionId: check.soulId(SessionsService.idPrefix),
+            desiredSecurityContext: check.securityContextName(),
+            tokens: check.array({ elements: check.string() }),
             agentFingerprint: check.optional(check.agentFingerprint())
         }));
 
-        if (credentials.every(
-                c => c.securityContext !== expectedSecurityContext)) {
-            throw errors.invalidCredentials({
-                reason: 'incorrect security context. Wanted: '
-                        + expectedSecurityContext
-            });
-        }
+        // Just the tokens signed by us, intended for this realm, and
+        // intended for the requested security context.
+        const credentialsBySessionId = tokensLib.decodeValid(realmId,
+                desiredSecurityContext, tokens,
+                this.leylineSettings.getConfig());
 
-        const latestEraRepresented = credentials.reduce(
-                (accum, { eraNumber }) => eraNumber > accum ? eraNumber : accum,
-                0);
-
-        const unretiredCredentials = [];
-        const retiredCredentials = [];
-
-        for (const c of credentials) {
-            if (c.eraNumber === latestEraRepresented) {
-                unretiredCredentials.push(c);
-            }
-            else {
-                retiredCredentials.push(c);
-            }
-        }
-
-        let nextEraCredentials;
-        let session = await findWithMatchingFingerprintOrInvalidate(
-                this, realmId, sessionId, agentFingerprint);
-
-        if (!session) {
-            throw errors.invalidCredentials({
-                reason: 'session expired, probably',
-                relog: true
-            });
-        }
-
-        if (session.invalidated) {
-            throw errors.invalidCredentials({
-                reason: 'session invalidated',
-                relog: true
-            });
-        }
-
-        const now = DateTime.fromJSDate(new Date(this.nower()));
-
-        if (session.expiresAt && now > DateTime.fromJSDate(session.expiresAt)) {
-            throw errors.invalidCredentials({
-                reason: 'session expired',
-                relog: true
-            });
-        }
-
-        const expirationPeriodMs = ms(
-                session.inactivityExpirationDuration
-                || config.defaultSessionInactivityExpirationDuration);
-
-        const expiresAt = DateTime.fromJSDate(session.lastUsedAt)
-                .plus(expirationPeriodMs);
-
-        if (now > expiresAt) {
-            throw errors.invalidCredentials({
-                reason: 'session expired',
-                relog: true
-            });
-        }
-
-        const mongoUpdate = {
-            $push: {},
-            $set: { lastUsedAt: now }
+        const result = {
+            addTokens: [],
+            retireTokens: [],
+            sessions: [],
+            suspiciousSessionIds: [],
+            suspiciousTokens: []
         };
 
-        const tokenEraOffset = latestEraRepresented - session.currentEraNumber;
-        if (tokenEraOffset < -1) {
-            // Someone has presented a very old token.
+        const realm = await this.realms.fetchById(realmId);
 
-            await this.doBestEffort('invalidate session (1)',
-                    this.invalidateSession(realmId, sessionId,
-                            'presented ancient token'));
+        const securityContextDefinition =
+                lodash.get(realm, ['securityContexts', desiredSecurityContext]);
 
-            throw errors.invalidCredentials({
-                prejudice: true,
-                reason: 'ancient token'
-            });
+        if (!securityContextDefinition) {
+            throw errors.noSuchSecurityContext(realmId, desiredSecurityContext);
         }
-        else if (tokenEraOffset === -1) {
-            // The user has presented a token from the last era.
 
-            const additionalTokenIds = setSubtract(
-                    unretiredCredentials.map(({ tokenId }) => tokenId),
-                    session.acceptedPreviousEraTokenIds);
+        // Get the data corresponding to the indicated sessions.
+        const credentialSessions = (await this.mongoCollection.find({
+            _id: { $in: Object.keys(credentialsBySessionId) }
+        }).toArray()).map(fromMongoDoc);
 
-            if (additionalTokenIds.length === unretiredCredentials.length) {
-                // None of the provided tokens matched an existing token.
-                // Danger!
+        const bestEffortUpdates = [];
 
-                await this.doBestEffort('invalidate session (1)',
-                        this.invalidateSession(
-                            realmId, sessionId,
-                            'presented token from alternate timeline'
-                        ));
+        let notYetInvalidatedSessions = credentialSessions;
+        for (const filter of [
+            s => {
+                if (s.invalidated) {
+                    throw new InvalidCredentials({
+                        reason: 'session marked invalidated: ' +
+                                s.invalidatedReason
+                    });
+                }
+            },
+            s => findWithMatchingFingerprintOrInvalidate.call(this,
+                    realmId, s, agentFingerprint),
+            s => stillMeetsPrecondition.call(this, s, realm,
+                    securityContextDefinition, bestEffortUpdates),
+            s => validateSessionCredentials.call(this, realmId,
+                    desiredSecurityContext, s,
+                    credentialsBySessionId[s.id].tokens)
+        ]) {
+            const filterResults = await Promise.allSettled(
+                    notYetInvalidatedSessions.map(filter));
 
-                throw errors.invalidCredentials({
-                    prejudice: true,
-                    reason: 'bad credentials'
-                });
+            let afterFilterSessions = [];
+            for (let i = 0; i < notYetInvalidatedSessions.length; i++) {
+                const session = notYetInvalidatedSessions[i];
+                const errorReason = filterResults[i].reason;
+                if (errorReason) {
+                    if (errorReason.code !== 'INVALID_CREDENTIALS') {
+                        throw errors.unexpectedError(errorReason);
+                    }
+
+                    for (const c
+                            of credentialsBySessionId[session.id].tokens) {
+                        result.retireTokens.push(c.originalToken);
+                    }
+
+                    if (errorReason.details.prejudice) {
+                        for (const c
+                                of credentialsBySessionId[session.id].tokens) {
+                            result.suspiciousTokens.push(c.originalToken);
+                        }
+
+                        result.suspiciousSessionIds.push(session.id);
+                    }
+                }
+                else {
+                    afterFilterSessions.push(
+                            filterResults[i].value || session);
+                }
             }
 
-            const gracePeriodMs = ms(
-                    session.eraGracePeriodDuration
-                    || config.defaultSessionEraGracePeriodDuration);
+            notYetInvalidatedSessions = afterFilterSessions;
+        }
 
-            const acceptableUntil =
-                    DateTime.fromJSDate(session.currentEraStartedAt)
-                    .plus(gracePeriodMs);
-
-            if (now > acceptableUntil) {
-                throw errors.invalidCredentials({
-                    reason: 'token expired',
-                    retry: true
-                });
+        if (bestEffortUpdates.length > 0) {
+            const mongoUpdate =
+                    this.mongoCollection.initializeUnorderedBulkOp();
+            for (const { where, update } of bestEffortUpdates) {
+                mongoUpdate.find(where).updateOne(update);
             }
 
-            mongoUpdate.$push.acceptedPreviousEraTokenIds =
-                    { $each: additionalTokenIds };
+            await this.doBestEffort(
+                    'session data observations', mongoUpdate.execute());
         }
-        else if (tokenEraOffset === 0) {
-            // The user has presented a token from the current era.
 
-            const additionalTokenIds = setSubtract(
-                    unretiredCredentials.map(({ tokenId }) => tokenId),
-                    session.acceptedCurrentEraTokenIds);
+        // TODO: We've thrown away tokens and sessions that we aren't
+        //       interested in, but that means we're potentially wasting an
+        //       opportunity to detect malice. Rather than ignoring those
+        //       we might have a separate best-effort malice-detection path so
+        //       that we make fullest use of our available signal.
 
-            if (additionalTokenIds.length === unretiredCredentials.length) {
-                // None of the provided tokens matched an existing token.
-                // Danger!
+        for (const s of notYetInvalidatedSessions) {
+            result.sessions.push(s.session);
 
-                await this.doBestEffort('invalidate session (1)',
-                        this.invalidateSession(
-                            realmId, sessionId,
-                            'presented token from alternate timeline'
-                        ));
-
-                throw errors.invalidCredentials({
-                    prejudice: true,
-                    reason: 'bad credentials'
-                });
+            if (s.nextEraCredentials) {
+                result.addTokens.push(
+                        tokensLib.encode(realmId, s.session.id,
+                                s.nextEraCredentials,
+                                this.leylineSettings.getConfig()));
             }
 
-            if (now >= DateTime.fromJSDate(
-                    session.currentEraGoverningPeriodEndsAt)) {
-                // These credentials are fine, but this era is in its lame duck
-                // period, so let's suggest some next-era credentials.
-
-                const nextEraTokenId = crypto.randomBytes(32);
-                nextEraCredentials = {
-                    index: session.currentEraNumber + 1,
-                    securityContext: session.securityContext,
-                    tokenId: nextEraTokenId
-                };
+            for (const c of s.retireCredentials) {
+                result.retireTokens.push(c.originalToken);
             }
-
-            mongoUpdate.$push.acceptedCurrentEraTokenIds =
-                    { $each: additionalTokenIds };
-        }
-        else if (tokenEraOffset === 1) {
-            // The user has presented a token from the next era.
-            session = advanceEra(this, session,
-                    session.acceptedCurrentEraTokenIds,
-                    unretiredCredentials.map(({ tokenId }) => tokenId));
-        }
-        else {
-            // The token is from the far future? Really we need to blow up the
-            // entire world, but for a start we can destroy this session.
-            await this.doBestEffort('invalidate session (4)',
-                    this.invalidateSession(realmId, sessionId,
-                            'presented far future token'));
-
-            throw errors.invalidCredentials({
-                prejudice: true,
-                reason: 'far future token'
-            });
         }
 
-        await this.mongoCollection.updateOne({
-            _id: sessionId,
-            lastUsedAt: { $lt: now }
-        }, {
-            $set: { lastUsedAt: now }
-        });
-
-        return {
-            ...session,
-
-            nextEraCredentials,
-            retireCredentials: retiredCredentials
-        };
+        return result;
     }
 };
 
@@ -364,23 +314,43 @@ async function advanceEra(
     });
 }
 
-async function findWithMatchingFingerprintOrInvalidate(
-        sessions, realmId, sessionId, agentFingerprint) {
-    const sessionData = await sessions.mongoCollection.findOne({
-        _id: sessionId,
-        realmId
-    });
+async function claimsMeetPrecondition(
+        securityContextDefinition, idTokenClaims, previousResult) {
 
-    if (!sessionData) {
-        throw errors.invalidCredentials({ reason: 'expired' });
+    let result;
+    if (previousResult && previousResult.hash
+            === securityContextDefinition.preconditionHash) {
+        // Precondition hasn't changed. idTokenClaims and context -can't-
+        // change. So our result is the same.
+        result = previousResult;
+    }
+    else {
+        const context = { sessionRequestedAt: this.nower() };
+
+        if (!await this.jsonata.evaluate(
+                securityContextDefinition.precondition || 'true',
+                idTokenClaims, context)) {
+            result = false;
+        }
+        else {
+            result = {
+                context,
+                hash: securityContextDefinition.preconditionHash
+            };
+        }
     }
 
+    return result;
+}
+
+async function findWithMatchingFingerprintOrInvalidate(
+        realmId, sessionData, agentFingerprint) {
     if (sessionData.agentFingerprint
             && agentFingerprint !== sessionData.agentFingerprint) {
 
-        await sessions.doBestEffort('invalidate session (4)',
-                sessions.invalidateSession(
-                    realmId, sessionId,
+        await this.doBestEffort('invalidate session (4)',
+                this.invalidateSession(
+                    realmId, sessionData.id,
                     'agent fingerprint changed'
                 ));
 
@@ -389,50 +359,13 @@ async function findWithMatchingFingerprintOrInvalidate(
             prejudice: true
         });
     }
-
-    return fromMongoDoc(sessionData);
 }
 
 function fromMongoDoc(d) {
-    return {
-        absoluteExpirationDuration: d.absoluteExpirationDuration,
-        acceptedCurrentEraTokenIds: d.acceptedCurrentEraTokenIds,
-        acceptedPreviousEraTokenIds: d.acceptedPreviousEraTokenIds,
-        agentFingerprint: d.agentFingerprint,
-        createdAt: d.createAt,
-        currentEraStartedAt: d.currentEraStartedAt,
-        currentEraNumber: d.currentEraNumber,
-        governingPeriodLength: d.governingPeriodLength,
-        lastUsedAt: d.lastUsedAt,
-        id: d._id,
-        inactivityExpirationDuration: d.inactivityExpirationDuration,
-        realmId: d.realmId,
-        securityContext: d.securityContext,
-        subjectId: d.subjectId
-    };
-}
+    const result = { ...d, id: d._id };
+    delete result._id;
 
-async function getSatisfiableSecurityContext(
-        sessions, realm, securityContext, idTokenClaims) {
-    const specifiedContext = (realm.securityContexts || {})[securityContext];
-
-    if (!specifiedContext) {
-        throw errors.invalidCredentials({
-            reason: `no such security context: ${securityContext}`
-        });
-    }
-
-    if (!sessions.jsonata.evaluate(
-            specifiedContext.precondition, { claims: idTokenClaims })) {
-        throw errors.invalidCredentials({
-            reason: `security context "${securityContext}" precondition not met`
-        });
-    }
-
-    return {
-        id: `${securityContext}:${specifiedContext.versionNumber}`,
-        ...specifiedContext.sessionOptions
-    };
+    return result;
 }
 
 function setSubtract(a1, a2) {
@@ -447,21 +380,239 @@ function sign(text, secret) {
     return crypto.createHmac('sha256', secret).update(text).digest();
 }
 
+async function stillMeetsPrecondition(
+        session, realm, securityContextDefinition, bestEffortUpdatesAccum) {
+    // Some sessions may have been established under an old version of this
+    // security context, in which case the precondition needs to be
+    // rechecked.
+
+    const newPreconditionMemo = await claimsMeetPrecondition.call(this,
+            realm, securityContextDefinition, session.idTokenClaims,
+            session.preconditionMemo);
+
+    if (newPreconditionMemo) {
+        if (newPreconditionMemo !== session.preconditionMemo) {
+
+            // Update the preconditionMemo so we won't keep
+            // recalculating this. Note that if this update fails, it's
+            // nbd. We'll just detect that the precondition needs to be
+            // evaluated again next time and issue the update once
+            // again.
+            bestEffortUpdatesAccum.push({
+                where: { _id: session.id },
+                update: {
+                    $set: { preconditionMemo: newPreconditionMemo }
+                }
+            });
+        }
+    }
+    else {
+        throw errors.invalidCredentials({
+            reason: 'claims no longer meet precondition'
+        });
+
+        // Mark the session invalidated in the database.
+        // Note that if this update fails, it's nbd. We're not passing
+        // this session along to the client and we'll just detect the
+        // issue again next time and try once again to invalidate.
+        bestEffortUpdatesAccum.push({
+            where: { _id: session.id },
+            update: {
+                $set: {
+                    invalidated: true,
+                    invalidatedReason: 'security context precondition '
+                            + 'no longer held'
+                }
+            }
+        });
+    }
+}
+
 function toMongoDoc(o) {
+    const result = { ...o, _id: o.id };
+    delete result.id;
+
+    return result;
+}
+
+async function validateSessionCredentials(
+        realmId, expectedSecurityContext, session, credentials) {
+
+    assert(!session.invalidated);
+    assert(credentials.every(c => c.sessionId === session.id));
+    assert(credentials.every(
+            c => c.securityContext === expectedSecurityContext));
+
+    const latestEraRepresented = credentials.reduce(
+            (accum, { eraNumber }) => eraNumber > accum ? eraNumber : accum,
+            0);
+
+    const unretiredCredentials = [];
+    const retiredCredentials = [];
+
+    for (const c of credentials) {
+        if (c.eraNumber === latestEraRepresented) {
+            unretiredCredentials.push(c);
+        }
+        else {
+            retiredCredentials.push(c);
+        }
+    }
+
+    let nextEraCredentials;
+
+    const now = DateTime.fromJSDate(new Date(this.nower()));
+
+    if (session.expiresAt && now > DateTime.fromJSDate(session.expiresAt)) {
+        throw errors.invalidCredentials({
+            reason: 'session expired',
+            relog: true
+        });
+    }
+
+    if (session.inactivityExpirationDuration) {
+        const expirationPeriodMs = ms(session.inactivityExpirationDuration);
+
+        const expiresAt = DateTime.fromJSDate(session.lastUsedAt)
+                .plus(expirationPeriodMs);
+
+        if (now > expiresAt) {
+            throw errors.invalidCredentials({
+                reason: 'session expired',
+                relog: true
+            });
+        }
+    }
+
+    const mongoUpdate = {
+        $push: {},
+        $set: { lastUsedAt: now }
+    };
+
+    const tokenEraOffset = latestEraRepresented - session.currentEraNumber;
+    if (tokenEraOffset < -1) {
+        // Someone has presented a very old token.
+
+        await this.doBestEffort('invalidate session (1)',
+                this.invalidateSession(realmId, sessionId,
+                        'presented ancient token'));
+
+        throw errors.invalidCredentials({
+            prejudice: true,
+            reason: 'ancient token'
+        });
+    }
+    else if (tokenEraOffset === -1) {
+        // The user has presented a token from the last era.
+
+        const additionalTokenIds = setSubtract(
+                unretiredCredentials.map(({ tokenId }) => tokenId),
+                session.acceptedPreviousEraTokenIds);
+
+        if (additionalTokenIds.length === unretiredCredentials.length) {
+            // None of the provided tokens matched an existing token.
+            // Danger!
+
+            await this.doBestEffort('invalidate session (1)',
+                    this.invalidateSession(
+                        realmId, sessionId,
+                        'presented token from alternate timeline'
+                    ));
+
+            throw errors.invalidCredentials({
+                prejudice: true,
+                reason: 'bad credentials'
+            });
+        }
+
+        const gracePeriodMs = ms(
+                session.eraGracePeriodDuration
+                || this.leylineSettings.getConfig()
+                    .defaultSessionEraGracePeriodDuration);
+
+        const acceptableUntil =
+                DateTime.fromJSDate(session.currentEraStartedAt)
+                .plus(gracePeriodMs);
+
+        if (now > acceptableUntil) {
+            throw errors.invalidCredentials({
+                reason: 'token expired',
+                retry: true
+            });
+        }
+
+        mongoUpdate.$push.acceptedPreviousEraTokenIds =
+                { $each: additionalTokenIds };
+    }
+    else if (tokenEraOffset === 0) {
+        // The user has presented a token from the current era.
+
+        const additionalTokenIds = setSubtract(
+                unretiredCredentials.map(({ tokenId }) => tokenId),
+                session.acceptedCurrentEraTokenIds);
+
+        if (additionalTokenIds.length === unretiredCredentials.length) {
+            // None of the provided tokens matched an existing token.
+            // Danger!
+
+            await this.doBestEffort('invalidate session (1)',
+                    this.invalidateSession(
+                        realmId, sessionId,
+                        'presented token from alternate timeline'
+                    ));
+
+            throw errors.invalidCredentials({
+                prejudice: true,
+                reason: 'bad credentials'
+            });
+        }
+
+        if (now >= DateTime.fromJSDate(
+                session.currentEraGoverningPeriodEndsAt)) {
+            // These credentials are fine, but this era is in its lame duck
+            // period, so let's suggest some next-era credentials.
+
+            const nextEraTokenId = crypto.randomBytes(32);
+            nextEraCredentials = {
+                index: session.currentEraNumber + 1,
+                securityContext: session.securityContext,
+                tokenId: nextEraTokenId
+            };
+        }
+
+        mongoUpdate.$push.acceptedCurrentEraTokenIds =
+                { $each: additionalTokenIds };
+    }
+    else if (tokenEraOffset === 1) {
+        // The user has presented a token from the next era.
+        session = advanceEra(this, session,
+                session.acceptedCurrentEraTokenIds,
+                unretiredCredentials.map(({ tokenId }) => tokenId));
+    }
+    else {
+        // The token is from the far future? Really we need to blow up the
+        // entire world, but for a start we can destroy this session.
+        await this.doBestEffort('invalidate session (4)',
+                this.invalidateSession(realmId, sessionId,
+                        'presented far future token'));
+
+        throw errors.invalidCredentials({
+            prejudice: true,
+            reason: 'far future token'
+        });
+    }
+
+    await this.mongoCollection.updateOne({
+        _id: session.id,
+        lastUsedAt: { $lt: now }
+    }, {
+        $set: { lastUsedAt: now }
+    });
+
     return {
-        _id: o.id,
-        absoluteExpirationDuration: o.absoluteExpirationDuration,
-        acceptedCurrentEraTokenIds: o.acceptedCurrentEraTokenIds,
-        acceptedPreviousEraTokenIds: o.acceptedPreviousEraTokenIds,
-        agentFingerprint: o.agentFingerprint,
-        createdAt: o.createAt,
-        currentEraStartedAt: o.currentEraStartedAt,
-        currentEraNumber: o.currentEraNumber,
-        governingPeriodLength: o.governingPeriodLength,
-        inactivityExpirationDuration: o.inactivityExpirationDuration,
-        lastUsedAt: o.lastUsedAt,
-        realmId: o.realmId,
-        securityContext: o.securityContext,
-        subjectId: o.subjectId
+        session,
+
+        nextEraCredentials,
+        retireCredentials: retiredCredentials
     };
 }

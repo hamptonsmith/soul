@@ -25,23 +25,20 @@ test('create default realm', hermeticTest(
         securityContexts: {
             anonymous: {
                 precondition: 'true',
-                sessionOptions: {},
-                versionNumber: 0
+                sessionOptions: {}
             },
             authenticated: {
                 precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
                 sessionOptions: {
                     inactivityExpirationDuration: '90d'
-                },
-                versionNumber: 0
+                }
             },
             secure: {
                 precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
                 sessionOptions: {
                     absoluteExpirationDuration: '6h',
                     inactivityExpirationDuration: '30m'
-                },
-                versionNumber: 0
+                }
             }
         },
         updatedAt: new Date(nower()).toISOString()
@@ -86,8 +83,7 @@ test('create non-default realm', hermeticTest(
                 sessionOptions: {
                     absoluteExpirationDuration: '1ms',
                     inactivityExpirationDuration: '2ms'
-                },
-                versionNumber: 0
+                }
             }
         },
         updatedAt: new Date(nower()).toISOString()
@@ -109,8 +105,7 @@ test('create non-default realm', hermeticTest(
                         sessionOptions: {
                             absoluteExpirationDuration: '1ms',
                             inactivityExpirationDuration: '2ms'
-                        },
-                        versionNumber: 0
+                        }
                     }
                 },
                 updatedAt: new Date(nower()).toISOString()
@@ -161,23 +156,20 @@ test('GET /realms/:realmId', hermeticTest(
         securityContexts: {
             anonymous: {
                 precondition: 'true',
-                sessionOptions: {},
-                versionNumber: 0
+                sessionOptions: {}
             },
             authenticated: {
                 precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
                 sessionOptions: {
                     inactivityExpirationDuration: '90d'
-                },
-                versionNumber: 0
+                }
             },
             secure: {
                 precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
                 sessionOptions: {
                     absoluteExpirationDuration: '6h',
                     inactivityExpirationDuration: '30m'
-                },
-                versionNumber: 0
+                }
             }
         },
         updatedAt: new Date(nower()).toISOString()

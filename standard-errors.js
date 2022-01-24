@@ -15,11 +15,30 @@ module.exports = {
     malformedToken(reason, details, cause) {
         return new this.MalformedToken({ reason, ...details }, cause);
     },
+    NoSuchAssertion: class extends SbError {
+        static messageTemplate = 'Security context {{{securityContextName}}} '
+                + 'of realm "{{{realmId}}}" has no such assertion: '
+                + '{{{assertionName}}}';
+    },
+    noSuchAssertion(realmId, securityContextName, assertionName) {
+        return new this.NoSuchAssertion({
+            assertionName,
+            realmId,
+            securityContextName
+        });
+    },
     NoSuchRealm: class extends SbError {
         static messageTemplate = 'No such realm: {{realmId}}';
     },
     noSuchRealm(realmId) {
         return new this.NoSuchRealm({ realmId });
+    },
+    NoSuchSecurityContext: class extends SbError {
+        static messageTemplate = 'Realm "{{{realmId}}}" has no such security '
+                + 'context: {{{securityContextName}}}'
+    },
+    noSuchSecurityContext(realmId, securityContextName) {
+        return new this.NoSuchSecurityContext({ realmId, securityContextName });
     },
     NoSuchSession: class extends SbError {
         static messageTemplate = 'No such session: {{sessionId}}';

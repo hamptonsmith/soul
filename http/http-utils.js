@@ -4,7 +4,7 @@ const jsonPointer = require('json-pointer');
 const validate = require('../utils/validator');
 
 module.exports = {
-    copySessionFields(session, target, ctx) {
+    copySessionFields(session, ctx, target = {}) {
         target.createAt = session.createdAt;
         target.currentEraStartedAt = session.currentEraStartedAt;
         target.currentEraNumber = session.currentEraNumber;
@@ -17,6 +17,8 @@ module.exports = {
         target.realmId = session.realmId;
         target.securityContext = session.securityContext;
         target.subjectId = session.subjectId;
+
+        return target;
     },
     async remapValidationErrorPaths(map, fn) {
         try {
@@ -38,5 +40,21 @@ module.exports = {
 
             throw e;
         }
+    },
+    realmReturnDoc(r, ctx) {
+        return {
+            createdAt: r.createdAt.toISOString(),
+            friendlyName: r.friendlyName,
+            href: `${ctx.state.baseHref}`
+                    + `/realms/${r.id}`,
+            id: r.id,
+            securityContexts: Object.fromEntries(
+                    Object.entries(r.securityContexts).map(([key, val]) =>
+                        [key, {
+                precondition: val.precondition,
+                sessionOptions: val.sessionOptions
+            }])),
+            updatedAt: r.updatedAt.toISOString()
+        };
     }
 };

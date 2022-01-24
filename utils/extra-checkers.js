@@ -74,10 +74,5 @@ module.exports = {
                 throw new this.ValidationError(`not id shaped`, actual);
             }
         };
-    },
-    versionedSecurityContextName() {
-        return (check, actual) => {
-            check.appendSchema(check.string({ regexp: /^\w{1,50}:\d{1,15}$/ }));
-        };
     }
 };

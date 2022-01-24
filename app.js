@@ -87,11 +87,11 @@ module.exports = async (argv, runtimeOpts = {}) => {
     const jsonata = new JsonataService(runtimeOpts);
     const leylineSettings = new LeylineSettingsService(serviceConfigDoc);
     const metrics = new MetricsService();
-    const realms = new RealmsService(dbClient, runtimeOpts);
 
+    const realms = new RealmsService(dbClient, jsonata, runtimeOpts);
     const jwts = new JwtsService(leylineSettings, metrics, runtimeOpts);
-    const sessions =
-            new SessionsService(dbClient, jsonata, realms, runtimeOpts);
+    const sessions = new SessionsService(
+                dbClient, jsonata, leylineSettings, realms, runtimeOpts);
 
     const services = {
         dbClient,

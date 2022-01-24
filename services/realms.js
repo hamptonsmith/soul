@@ -1,5 +1,7 @@
 'use strict';
 
+const bs58 = require('bs58');
+const canonicalJson = require('canonical-json');
 const crypto = require('crypto');
 const errors = require('../standard-errors');
 const generateId = require('../utils/generate-id');
@@ -9,8 +11,9 @@ const validate = require('../utils/soul-validate');
 module.exports = class RealmsService {
     static idPrefix = 'rlm';
 
-    constructor(dbClient, { nower }) {
+    constructor(dbClient, jsonata, { nower }) {
         this.dbClient = dbClient;
+        this.jsonata = jsonata;
         this.nower = nower;
 
         this.byCreationTime = new PageableCollectionOrder(
@@ -49,31 +52,38 @@ module.exports = class RealmsService {
 
         const id = generateId('rlm');
 
+        const normalizedSecurityContexts = {};
+        for (const [
+            name,
+            {
+                precondition = 'true',
+                sessionOptions: {
+                    absoluteExpirationDuration,
+                    inactivityExpirationDuration
+                } = {}
+            }
+        ] of Object.entries(securityContexts)) {
+
+            normalizedSecurityContexts[name] = {
+                precondition,
+                preconditionHash: bs58.encode(
+                    crypto.createHash('sha256').update(precondition).digest()
+
+                    // We're just detecting changes and the adversary doesn't
+                    // control the input. 64 bits is plenty.
+                    .slice(0, 8)
+                ),
+                sessionOptions: {
+                    absoluteExpirationDuration,
+                    inactivityExpirationDuration
+                }
+            };
+        }
+
         const newDoc = {
             createdAt: now,
             friendlyName,
-            securityContexts:
-                Object.fromEntries(Object.entries(securityContexts)
-                        .map(([
-                            contextName,
-                            {
-                                precondition = 'true',
-                                sessionOptions: {
-                                    absoluteExpirationDuration,
-                                    inactivityExpirationDuration
-                                } = {}
-                            }
-                        ]) => ([
-                            contextName,
-                            {
-                                precondition,
-                                sessionOptions: {
-                                    absoluteExpirationDuration,
-                                    inactivityExpirationDuration
-                                },
-                                versionNumber: 0
-                            }
-                        ]))),
+            securityContexts: normalizedSecurityContexts,
             updatedAt: now
         };
 
