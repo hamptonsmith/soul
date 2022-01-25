@@ -167,3 +167,111 @@ test('JWK\'s are cached', hermeticTest(
 
     t.is((await soul.get('/metrics')).data.jwkCacheMiss, 1);
 }));
+
+test('expired JWT', hermeticTest(
+        async (t, { buildJwt, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const idToken = await buildJwt(
+            'https://local.literal.key.com',
+            'HS256', 'key1', {
+                exp: Math.floor(nower() / 1000),
+                sub: 'testuser1'
+            });
+
+    nower.advance('1m');
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'idToken',
+        securityContext: 'authenticated',
+        token: idToken
+    }));
+
+    t.is(error.response.data.code, 'UNACCEPTABLE_JWT');
+}));
+
+test('no issuer', hermeticTest(
+        async (t, { buildJwt, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const idToken = await buildJwt(
+            'https://local.literal.key.com',
+            'HS256', 'key1', {
+                sub: 'testuser1'
+            }, { noIssuer: true });
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'idToken',
+        securityContext: 'authenticated',
+        token: idToken
+    }));
+
+    t.is(error.response.data.code, 'UNACCEPTABLE_JWT');
+}));
+
+test('no subject', hermeticTest(
+        async (t, { buildJwt, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const idToken = await buildJwt(
+            'https://local.literal.key.com',
+            'HS256', 'key1', {});
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'idToken',
+        securityContext: 'authenticated',
+        token: idToken
+    }));
+
+    console.log(error);
+
+    t.is(error.response.data.code, 'UNACCEPTABLE_JWT');
+}));
+
+test('no `alg` header', hermeticTest(
+        async (t, { buildJwt, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const idToken = Buffer.from(JSON.stringify({
+        kid: 'key1'
+    })).toString('base64url') + '.'
+    + Buffer.from(JSON.stringify({ iss: 'ladedah' })).toString('base64url')
+    + '.' + Buffer.from('signature!').toString('base64url');
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'idToken',
+        securityContext: 'authenticated',
+        token: idToken
+    }));
+
+    t.is(error.response.data.code, 'UNACCEPTABLE_JWT');
+}));
+
+test('no `kid` header', hermeticTest(
+        async (t, { buildJwt, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const idToken = Buffer.from(JSON.stringify({
+        alg: 'HS256'
+    })).toString('base64url') + '.'
+    + Buffer.from(JSON.stringify({ iss: 'ladedah' })).toString('base64url')
+    + '.' + Buffer.from('signature!').toString('base64url');
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/sessions`, {
+        mechanism: 'idToken',
+        securityContext: 'authenticated',
+        token: idToken
+    }));
+
+    t.is(error.response.data.code, 'UNACCEPTABLE_JWT');
+}));

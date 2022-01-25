@@ -44,6 +44,7 @@ class UnexpectedError extends SbError {
 const publicErrors = {
     NO_SUCH_KEY: 401,
     NO_SUCH_REALM: 404,
+    NOT_AUTHENTICATED: 401,
     UNACCEPTABLE_JWT: 401,
     UNFAMILIAR_AUTHORITY: 401,
     VALIDATION_ERROR: 500,

@@ -60,7 +60,7 @@ module.exports = (...args) => async t => {
 
     let server;
 
-    async function buildJwt(issuer, alg, kid, payload) {
+    async function buildJwt(issuer, alg, kid, payload, opts = {}) {
         if (!jwksClient) {
             jwksClient = new JwksClient(
                     server.services.leylineSettings, undefined, { nower });
@@ -71,14 +71,18 @@ module.exports = (...args) => async t => {
         const signingOpts = {
             algorithm: alg,
             audience: server.services.leylineSettings.getConfig().audienceId,
-            keyid: kid
+            keyid: kid,
+
+            ...opts
         };
 
-        if (!payload.iss) {
+        if (!payload.iss && !signingOpts.noIssuer) {
             // jsonwebtoken distinguishes `undefined` from not set,
             // naturally.
             signingOpts.issuer = issuer;
         }
+
+        delete signingOpts.noIssuer;
 
         let jwt;
         if (alg === 'HS256') {

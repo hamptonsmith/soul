@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('assert');
 const buildGetJwks = require('jwks-rsa');
 const errors = require('../standard-errors');
 const jsonwebtoken = require('jsonwebtoken');
@@ -36,7 +37,10 @@ module.exports = class JwtsService {
                 audience: this.leylineSettings.getConfig().audienceId
             }, (err, payload) => {
                 if (err) {
-                    reject(err);
+                    assert(['TokenExpiredError', 'JsonWebTokenError',
+                            'NotBeforeError'].includes(err.name));
+
+                    reject(new UnacceptableJwt({ reason: err.message }));
                 }
                 else {
                     resolve(payload);
@@ -45,12 +49,7 @@ module.exports = class JwtsService {
         });
 
         if (!payload.sub) {
-            throw errors.notAuthenticated('Not an id token.');
-        }
-
-        if (!payload.iss || !payload.iat) {
-            throw new Error('I can\'t use this token. :( '
-                    + JSON.stringify(payload));
+            throw new UnacceptableJwt({ reason: 'No `sub` claim.' });
         }
 
         return payload;
