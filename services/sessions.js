@@ -20,9 +20,10 @@ module.exports = class SessionsService {
     static idPrefix = 'sid';
 
     constructor(dbClient, jsonataService, leylineSettingsService, realmsService,
-            { doBestEffort, nower }) {
+            { doBestEffort, errorReporter, nower }) {
 
         this.doBestEffort = doBestEffort;
+        this.errorReporter = errorReporter;
         this.mongoCollection = dbClient.collection('Sessions');
         this.nower = nower;
         this.jsonata = jsonataService;
@@ -73,7 +74,7 @@ module.exports = class SessionsService {
         }
 
         const preconditionMemo = await claimsMeetPrecondition.call(this,
-                realm, securityContextDefinition, idTokenClaims);
+                securityContextDefinition, idTokenClaims);
 
         if (!preconditionMemo) {
             throw errors.invalidCredentials({
@@ -327,16 +328,29 @@ async function claimsMeetPrecondition(
     else {
         const context = { sessionRequestedAt: this.nower() };
 
-        if (!await this.jsonata.evaluate(
-                securityContextDefinition.precondition || 'true',
-                idTokenClaims, context)) {
-            result = false;
+        try {
+            if (!await this.jsonata.evaluate(
+                    securityContextDefinition.precondition || 'true',
+                    { claims: idTokenClaims }, context)) {
+                result = false;
+            }
+            else {
+                result = {
+                    context,
+                    hash: securityContextDefinition.preconditionHash
+                };
+            }
         }
-        else {
-            result = {
-                context,
-                hash: securityContextDefinition.preconditionHash
-            };
+        catch (e) {
+            if (e.code !== 'JSONATA_COMPILATION_ERROR'
+                    && e.code !== 'JSONATA_RUNTIME_ERROR') {
+                throw errors.unexpectedError(e);
+            }
+
+            this.errorReporter.warning(e);
+
+            // We treat this as a normal precondition failure.
+            result = false;
         }
     }
 

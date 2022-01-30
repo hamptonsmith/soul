@@ -482,3 +482,53 @@ test('different agent fingerprint invalidates session w/ prejudice',
     t.deepEqual(accessAttemptData.suspiciousSessionIds,
             [sessionData.sessions[0].id]);
 }));
+
+test('compile-time error in precondition', hermeticTest(
+        async (t, { baseHref, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms', {
+        securityContexts: {
+            foo: { precondition: '5.nine!@#$' }
+        }
+    });
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/sessions`, {
+        agentFingerprint: 'abcdef',
+        mechanism: 'dev',
+        securityContext: 'foo',
+        jwtPayload: {
+            iat: nower(),
+            iss: 'http://me.com',
+            sub: 'user123'
+        }
+    }));
+
+    t.is(error.response.status, 403);
+    t.is(error.response.data.code, 'INVALID_CREDENTIALS');
+}));
+
+test('run-time error in precondition', hermeticTest(
+        async (t, { baseHref, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms', {
+        securityContexts: {
+            foo: { precondition: '"a" + "b"' }
+        }
+    });
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/sessions`, {
+        agentFingerprint: 'abcdef',
+        mechanism: 'dev',
+        securityContext: 'foo',
+        jwtPayload: {
+            iat: nower(),
+            iss: 'http://me.com',
+            sub: 'user123'
+        }
+    }));
+
+    t.is(error.response.status, 403);
+    t.is(error.response.data.code, 'INVALID_CREDENTIALS');
+}));

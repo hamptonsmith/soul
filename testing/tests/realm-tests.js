@@ -28,13 +28,13 @@ test('create default realm', hermeticTest(
                 sessionOptions: {}
             },
             authenticated: {
-                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                precondition: 'claims.sub and claims.iat >= $sessionRequestedAt - $ms("5m")',
                 sessionOptions: {
                     inactivityExpirationDuration: '90d'
                 }
             },
             secure: {
-                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                precondition: 'claims.sub and claims.iat >= $sessionRequestedAt - $ms("5m")',
                 sessionOptions: {
                     absoluteExpirationDuration: '6h',
                     inactivityExpirationDuration: '30m'
@@ -159,13 +159,13 @@ test('GET /realms/:realmId', hermeticTest(
                 sessionOptions: {}
             },
             authenticated: {
-                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                precondition: 'claims.sub and claims.iat >= $sessionRequestedAt - $ms("5m")',
                 sessionOptions: {
                     inactivityExpirationDuration: '90d'
                 }
             },
             secure: {
-                precondition: 'claim.sub and claim.iat >= $now - $ms("5m")',
+                precondition: 'claims.sub and claims.iat >= $sessionRequestedAt - $ms("5m")',
                 sessionOptions: {
                     absoluteExpirationDuration: '6h',
                     inactivityExpirationDuration: '30m'

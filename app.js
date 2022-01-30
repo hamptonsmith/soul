@@ -42,6 +42,7 @@ class UnexpectedError extends SbError {
 }
 
 const publicErrors = {
+    INVALID_CREDENTIALS: 403,
     NO_SUCH_KEY: 401,
     NO_SUCH_REALM: 404,
     NOT_AUTHENTICATED: 401,
