@@ -53,16 +53,17 @@ module.exports = class SessionsService {
             realmId: check.soulId(RealmsService.idPrefix),
             securityContextName: check.securityContextName(),
             idTokenClaims: (check, actual) => {
-                if (JSON.stringify(idTokenClaims || null).length > 2000) {
+                const jsonified = JSON.stringify(idTokenClaims || null);
+                if (jsonified.length > 2000) {
                     throw new check.ValidationError('Id token\'s claims must '
                             + 'serialize to JSON shorter than 2000 characters, '
-                            + 'but length was: '
-                            + JSON.stringify(idTokens || null).length,
-                            actual);
+                            + 'but length was: ' + jsonified.length, actual);
                 }
             },
             agentFingerprint: check.optional(check.agentFingerprint())
         }));
+
+        assert(idTokenClaims || securityContextName === 'anonymous');
 
         const realm = await this.realms.fetchById(realmId);
 
@@ -388,10 +389,6 @@ function setSubtract(a1, a2) {
     const result = a1.filter(el => !a2Set.has(el));
 
     return result;
-}
-
-function sign(text, secret) {
-    return crypto.createHmac('sha256', secret).update(text).digest();
 }
 
 async function stillMeetsPrecondition(

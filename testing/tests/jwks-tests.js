@@ -57,9 +57,8 @@ test('only refresh uri JWKS every 30s', hermeticTest(
 
     // First request against the issuer triggers a refresh from the JWKS uri.
     await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://uri.key.com',
                 'HS256', 'key1', {
@@ -72,9 +71,8 @@ test('only refresh uri JWKS every 30s', hermeticTest(
     // Second request doesn't trigger a refresh, even with an uncached key,
     // because we will only refresh once every 30 seconds.
     await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://uri.key.com',
                 'HS256', 'key2', {
@@ -89,9 +87,8 @@ test('only refresh uri JWKS every 30s', hermeticTest(
     nower.advance('31s');
 
     await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://uri.key.com',
                 'HS256', 'key3', {
@@ -141,9 +138,8 @@ test('JWK\'s are cached', hermeticTest(
 
     // First request against the issuer is necessarily a cache miss.
     await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://uri.key.com',
                 'HS256', 'key1', {
@@ -155,9 +151,8 @@ test('JWK\'s are cached', hermeticTest(
 
     // Second request against the same key should be cached.
     await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://uri.key.com',
                 'HS256', 'key1', {
@@ -183,9 +178,8 @@ test('expired JWT', hermeticTest(
     nower.advance('1m');
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: idToken
     }));
 
@@ -204,9 +198,8 @@ test('no issuer', hermeticTest(
             }, { noIssuer: true });
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: idToken
     }));
 
@@ -223,9 +216,8 @@ test('no subject', hermeticTest(
             'HS256', 'key1', {});
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: idToken
     }));
 
@@ -246,9 +238,8 @@ test('no `alg` header', hermeticTest(
     + '.' + Buffer.from('signature!').toString('base64url');
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: idToken
     }));
 
@@ -267,9 +258,8 @@ test('no `kid` header', hermeticTest(
     + '.' + Buffer.from('signature!').toString('base64url');
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: idToken
     }));
 

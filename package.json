@@ -24,6 +24,7 @@
     "deepequal": "^0.0.1",
     "fast-json-patch": "^3.1.0",
     "get-jwks": "^4.3.0",
+    "http-link-header": "^1.0.4",
     "json-pointer": "^0.6.1",
     "jsonata": "^1.8.5",
     "jsonpointer": "^5.0.0",

@@ -1,5 +1,6 @@
 'use strict';
 
+const axios = require('axios');
 const bs58 = require('bs58');
 const crypto = require('crypto');
 const defaultConfig = require('../../default-service-config');
@@ -7,6 +8,7 @@ const fs = require('fs');
 const hermeticTest = require('../hermetic-test');
 const jsonpointer = require('json-pointer');
 const jsonwebtoken = require('jsonwebtoken');
+const LinkHeader = require('http-link-header');
 const pathLib = require('path');
 const pemToJwk = require('pem-jwk').pem2jwk;
 const test = require('ava');
@@ -23,9 +25,8 @@ test('dev mechanism', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'dev',
-        securityContext: 'authenticated',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -50,9 +51,8 @@ test('idToken mechanism', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://local.literal.key.com',
                 'HS256', 'key1', {
@@ -62,6 +62,27 @@ test('idToken mechanism', hermeticTest(
 
     const { data: accessAttemptData } = await soul.post(
             `/realms/${realmId}/securityContexts/authenticated/accessAttempts`,
+            {
+                sessionTokens: sessionData.addTokens
+            });
+
+    t.deepEqual(
+            accessAttemptData.sessions.map(s => s.id),
+            [sessionData.sessions[0].id]);
+}));
+
+test('anonymous mechanism', hermeticTest(
+        async (t, { soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const { data: sessionData } = await soul.post(
+            `/realms/${realmId}/securityContexts/anonymous/sessions`, {
+        mechanism: 'anonymous'
+    });
+
+    const { data: accessAttemptData } = await soul.post(
+            `/realms/${realmId}/securityContexts/anonymous/accessAttempts`,
             {
                 sessionTokens: sessionData.addTokens
             });
@@ -102,9 +123,8 @@ test('rsa key', hermeticTest(
     });
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://local.literal.key.com',
                 'RS256', 'key2', {
@@ -156,9 +176,8 @@ test('uri jwks', hermeticTest(
     });
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'idToken',
-        securityContext: 'authenticated',
         token: await buildJwt(
                 'https://uri.key.com',
                 'HS256', 'key1', {
@@ -183,10 +202,9 @@ test('issuer w/ malicious name', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`,
+            `/realms/${realmId}/securityContexts/authenticated/sessions`,
             {
                 mechanism: 'idToken',
-                securityContext: 'authenticated',
                 token: await buildJwt(
                         'https://local.literal.key.com', 'HS256',
                         'key1', { iss: '__proto__', sub: 'testuser1' })
@@ -201,10 +219,9 @@ test('unknown issuer', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`,
+            `/realms/${realmId}/securityContexts/authenticated/sessions`,
             {
                 mechanism: 'idToken',
-                securityContext: 'authenticated',
                 token: await buildJwt(
                         'https://local.literal.key.com', 'HS256',
                         'key1',
@@ -222,10 +239,9 @@ test('no such key for issuer', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`,
+            `/realms/${realmId}/securityContexts/authenticated/sessions`,
             {
                 mechanism: 'idToken',
-                securityContext: 'authenticated',
                 token: jsonwebtoken.sign(
                     {
                         iss: 'https://local.literal.key.com'
@@ -267,10 +283,9 @@ test('unknown kty', hermeticTest(async (t, { buildJwt, soul, nower }) => {
     });
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`,
+            `/realms/${realmId}/securityContexts/authenticated/sessions`,
             {
                 mechanism: 'idToken',
-                securityContext: 'authenticated',
                 token: jsonwebtoken.sign(
                     {
                         iss: 'https://weirdkey.com'
@@ -290,9 +305,8 @@ test('sessions expire', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         mechanism: 'dev',
-        securityContext: 'authenticated',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -320,9 +334,8 @@ test('security contexts can have absolute expirations', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/secure/sessions`, {
         mechanism: 'dev',
-        securityContext: 'secure',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -350,9 +363,8 @@ test('valid credentials but wrong context', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/secure/sessions`, {
         mechanism: 'dev',
-        securityContext: 'secure',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -429,10 +441,9 @@ test('same agent fingerprint succeeds', hermeticTest(
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         agentFingerprint: 'abcdef',
         mechanism: 'dev',
-        securityContext: 'authenticated',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -458,10 +469,9 @@ test('different agent fingerprint invalidates session w/ prejudice',
     const { data: { id: realmId }} = await soul.post('/realms');
 
     const { data: sessionData } = await soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
         agentFingerprint: 'abcdef',
         mechanism: 'dev',
-        securityContext: 'authenticated',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -493,10 +503,9 @@ test('compile-time error in precondition', hermeticTest(
     });
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/foo/sessions`, {
         agentFingerprint: 'abcdef',
         mechanism: 'dev',
-        securityContext: 'foo',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -518,10 +527,9 @@ test('run-time error in precondition', hermeticTest(
     });
 
     const error = await t.throwsAsync(soul.post(
-            `/realms/${realmId}/sessions`, {
+            `/realms/${realmId}/securityContexts/foo/sessions`, {
         agentFingerprint: 'abcdef',
         mechanism: 'dev',
-        securityContext: 'foo',
         jwtPayload: {
             iat: nower(),
             iss: 'http://me.com',
@@ -532,3 +540,112 @@ test('run-time error in precondition', hermeticTest(
     t.is(error.response.status, 403);
     t.is(error.response.data.code, 'INVALID_CREDENTIALS');
 }));
+
+test('jwt claims too big', hermeticTest(
+        async (t, { baseHref, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/securityContexts/authenticated/sessions`, {
+        mechanism: 'dev',
+        jwtPayload: {
+            iat: nower(),
+            iss: 'http://me.com',
+            sub: 'user123',
+            big: stringOfLength(3000)
+        }
+    }));
+
+    t.is(error.response.status, 400);
+    t.is(error.response.data.code, 'VALIDATION_ERROR');
+}));
+
+test('non-existent security context on create', hermeticTest(
+        async (t, { baseHref, soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/securityContexts/sillyname/sessions`, {
+        mechanism: 'dev',
+        jwtPayload: {
+            iat: nower(),
+            iss: 'http://me.com',
+            sub: 'user123'
+        }
+    }));
+
+    t.is(error.response.status, 404);
+    t.is(error.response.data.code, 'NO_SUCH_SECURITY_CONTEXT');
+}));
+
+test('non-existent security context on access check', hermeticTest(
+        async (t, { soul, nower }) => {
+
+    const { data: { id: realmId }} = await soul.post('/realms');
+
+    const error = await t.throwsAsync(soul.post(
+            `/realms/${realmId}/securityContexts/sillyname/accessAttempts`,
+            {
+                sessionTokens: ['blah']
+            }));
+
+    t.is(error.response.status, 404);
+    t.is(error.response.data.code, 'NO_SUCH_SECURITY_CONTEXT');
+}));
+
+test('session list', hermeticTest(
+        async (t, { baseHref, soul, nower }) => {
+
+    const { data: { id: realmId1 }} = await soul.post('/realms');
+    const { data: { id: realmId2 }} = await soul.post('/realms');
+
+    await soul.post(
+            `/realms/${realmId1}/securityContexts/authenticated/sessions`, {
+        mechanism: 'dev',
+        jwtPayload: {
+            iat: nower(),
+            iss: 'http://me.com',
+            sub: 'user123'
+        }
+    });
+
+    for (let i = 0; i < 32; i++) {
+        await soul.post(
+                `/realms/${realmId2}/securityContexts/authenticated/sessions`, {
+            mechanism: 'dev',
+            jwtPayload: {
+                iat: nower(),
+                iss: 'http://me.com',
+                sub: 'user123'
+            }
+        });
+    }
+
+    const retrievedSessions = [];
+    let link = new LinkHeader();
+    link.set({
+        rel: 'next',
+        uri: `${baseHref}/realms/${realmId2}/sessions?limit=10`
+    });
+
+    while(link.has('next')) {
+        const response = await axios.get(link.get('next')[0].uri);
+        for (const d of response.data) {
+            retrievedSessions.push(d);
+        }
+
+        link = LinkHeader.parse(response.headers.link || '');
+    }
+
+    t.is(retrievedSessions.length, 32);
+}));
+
+function stringOfLength(n) {
+    let result = '';
+    while (result.length < n) {
+        result += 'a';
+    }
+    return result;
+}
